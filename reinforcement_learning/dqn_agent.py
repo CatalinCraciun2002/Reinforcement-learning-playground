@@ -11,7 +11,7 @@ import os
 
 # Add parent directory to path to import game module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from game import Agent, Directions
+from core.game import Agent, Directions
 from reinforcement_learning.dqn_model import DQN
 
 class ReplayBuffer:

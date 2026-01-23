@@ -14,11 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from reinforcement_learning.dqn_agent import DQNAgent, Directions
 from reinforcement_learning.dqn_model import DQN
-import layout as layout_module
-from pacman import ClassicGameRules
-import textDisplay
-import ghostAgents
-import graphicsDisplay
+import core.layout as layout_module
+from core.pacman import ClassicGameRules
+import display.textDisplay as textDisplay
+import agents.ghostAgents as ghostAgents
+import display.graphicsDisplay as graphicsDisplay
 
 def run_validation_game(agent, layout_name='mediumClassic'):
     """

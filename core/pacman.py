@@ -39,13 +39,14 @@ code to run a game.  This file is divided into three sections:
 To play your first game, type 'python pacman.py' from the command line.
 The keys are 'a', 's', 'd', and 'w' to move (or arrow keys).  Have fun!
 """
-from game import GameStateData
-from game import Game
-from game import Directions
-from game import Actions
-from util import nearestPoint
-from util import manhattanDistance
-import util, layout
+from core.game import GameStateData
+from core.game import Game
+from core.game import Directions
+from core.game import Actions
+from core.util import nearestPoint
+from core.util import manhattanDistance
+import core.util as util
+import core.layout as layout
 import sys, types, time, random, os
 
 ###################################################
@@ -577,14 +578,14 @@ def readCommand( argv ):
 
     # Choose a display format
     if options.quietGraphics:
-        import textDisplay
+        import display.textDisplay as textDisplay
         args['display'] = textDisplay.NullGraphics()
     elif options.textGraphics:
-        import textDisplay
+        import display.textDisplay as textDisplay
         textDisplay.SLEEP_TIME = options.frameTime
         args['display'] = textDisplay.PacmanGraphics()
     else:
-        import graphicsDisplay
+        import display.graphicsDisplay as graphicsDisplay
         args['display'] = graphicsDisplay.PacmanGraphics(options.zoom, frameTime = options.frameTime)
     args['numGames'] = options.numGames
     args['record'] = options.record
@@ -631,7 +632,8 @@ def loadAgent(pacman, nographics):
     raise Exception('The agent ' + pacman + ' is not specified in any *Agents.py.')
 
 def replayGame( layout, actions, display ):
-    import pacmanAgents, ghostAgents
+    import agents.pacmanAgents as pacmanAgents
+    import agents.ghostAgents as ghostAgents
     rules = ClassicGameRules()
     agents = [pacmanAgents.GreedyAgent()] + [ghostAgents.RandomGhost(i+1) for i in range(layout.getNumGhosts())]
     game = rules.newGame( layout, agents[0], agents[1:], display )
@@ -706,17 +708,17 @@ def runGames( layout, pacman, ghosts, display, numGames, record, numTraining = 0
     return games
 
 import numpy as np
-from evolve import genetic_algorithm_evolution
+from genetic_algorithms.evolve import genetic_algorithm_evolution
 import copy
 from tqdm import tqdm
 
 def change_display(quiet, zoom, frameTime=0):
 
     if quiet:
-        import textDisplay
+        import display.textDisplay as textDisplay
         return textDisplay.NullGraphics()
     else:
-        import graphicsDisplay
+        import display.graphicsDisplay as graphicsDisplay
         return graphicsDisplay.PacmanGraphics(zoom, frameTime = frameTime)
 
 
