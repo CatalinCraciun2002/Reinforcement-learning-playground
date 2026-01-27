@@ -112,6 +112,9 @@ def run_dqn_training(args):
             if done and game.state.isWin():
                 reward += 100 # Win Bonus
                 total_wins += 1
+            
+            if action != Directions.STOP:
+                reward += 0.1
                 
             # Living Penalty (optional, to encourage shorter paths if score is same)
             # reward -= 1 

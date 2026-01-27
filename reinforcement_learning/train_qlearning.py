@@ -4,6 +4,9 @@ Training script for Approximate Q-Learning Agent
 """
 import sys
 import os
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import pickle
 import time
@@ -18,6 +21,7 @@ from core.pacman import ClassicGameRules
 import display.textDisplay as textDisplay
 import display.graphicsDisplay as graphicsDisplay
 import agents.ghostAgents as ghostAgents
+from core.game import Directions
 
 def run_qlearning_training(args):
     print(f"Initializing Q-Learning Training (Layout: {args.layout})...")
@@ -92,6 +96,8 @@ def run_qlearning_training(args):
                             reward -= 500
                     
                     # Update Agent
+                    if action != Directions.STOP:
+                        reward += 0
                     agent.update(state, action, next_state, reward)
         
         # End of episode
@@ -126,7 +132,7 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0.2, help='Learning Rate')
     parser.add_argument('--gamma', type=float, default=0.8, help='Discount Factor')
     parser.add_argument('--epsilon', type=float, default=0.05, help='Exploration Rate')
-    parser.add_argument('--weights_file', type=str, default='qlearning_weights.pkl', help='File to save/load weights')
+    parser.add_argument('--weights_file', type=str, default='agents/qlearning_weights.pkl', help='File to save/load weights')
 
     args = parser.parse_args()
     run_qlearning_training(args)
