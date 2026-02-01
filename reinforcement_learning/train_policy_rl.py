@@ -8,6 +8,7 @@ import numpy as np
 import sys
 import os
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,22 +49,52 @@ def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, 
 
 
 def train(num_epochs=100, batch_size=32, steps_per_epoch=20, 
-          layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=50):
+          layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=50,
+          pretrained_model_path=None, save_model_path=None):
     """
     Training with GAE.
     
     Args:
         lam: GAE lambda for advantage propagation (default: 0.95)
+        pretrained_model_path: Path to pretrained model checkpoint (e.g., from human_feedback training)
+        save_model_path: Path to save the trained model (default: inside timestamped run folder)
     """
     
     print("="*60)
     print(f"Training: {num_epochs} epochs, {batch_size} parallel games")
     print(f"Layout: {layout_name}, γ={gamma}, λ={lam}, lr={lr}")
+    if pretrained_model_path:
+        print(f"Loading pretrained model: {pretrained_model_path}")
     print("="*60)
     
     net = ActorCriticNetwork(memory_context=5)
+    
+    # Load pretrained weights if provided
+    if pretrained_model_path and os.path.exists(pretrained_model_path):
+        try:
+            net.load_state_dict(torch.load(pretrained_model_path), strict=False)
+            print(f"✓ Successfully loaded pretrained model from {pretrained_model_path}")
+        except Exception as e:
+            print(f"⚠ Warning: Failed to load pretrained model: {e}")
+            print("  Continuing with randomly initialized weights...")
+    elif pretrained_model_path:
+        print(f"⚠ Warning: Pretrained model path specified but file not found: {pretrained_model_path}")
+        print("  Continuing with randomly initialized weights...")
+    
     agent = RLAgent(net, memory_context=5)
     optimizer = optim.Adam(net.parameters(), lr=lr)
+    
+    # Setup TensorBoard
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_dir = f'runs/rl_training/{timestamp}'
+    writer = SummaryWriter(log_dir)
+    print(f"TensorBoard logging to: {log_dir}")
+    print("="*60 + "\n")
+    
+    # Set default save path inside the run folder if not specified
+    if save_model_path is None:
+        save_model_path = f'{log_dir}/model_checkpoint.pth'
     
     envs = [PacmanEnv(agent, layout_name) for _ in range(batch_size)]
     
@@ -172,12 +203,24 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
         losses.append(total_loss.item())
         
         avg_steps = total_steps / sum([env.wins + 1 for env in envs]) if total_steps > 0 else 0
+        win_rate = 100*wins/((epoch+1)*batch_size)
+        
+        # Log to TensorBoard
+        writer.add_scalar('Loss/total', total_loss.item(), epoch)
+        writer.add_scalar('Loss/actor', actor_loss.item(), epoch)
+        writer.add_scalar('Loss/critic', critic_loss.item(), epoch)
+        writer.add_scalar('Loss/entropy_bonus', entropy_bonus.item(), epoch)
+        writer.add_scalar('Performance/win_rate', win_rate, epoch)
+        writer.add_scalar('Performance/total_wins', wins, epoch)
+        writer.add_scalar('Performance/avg_steps', avg_steps, epoch)
+        writer.add_scalar('Training/advantage_mean', all_advantages.mean().item(), epoch)
+        writer.add_scalar('Training/advantage_std', all_advantages.std().item(), epoch)
         
         pbar.set_postfix({
             'Loss': f'{losses[-1]:.3f}',
             'Wins': wins,
             'AvgSteps': f'{avg_steps:.1f}',
-            'WinRate': f'{100*wins/((epoch+1)*batch_size):.1f}%'
+            'WinRate': f'{win_rate:.1f}%'
         })
         
         # Validation
@@ -189,17 +232,27 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
             agent.model.eval()
             score, won, steps = run_validation_game(agent, layout_name, with_graphics=True)
             
+            # Log validation results
+            writer.add_scalar('Validation/score', score, epoch)
+            writer.add_scalar('Validation/won', 1 if won else 0, epoch)
+            writer.add_scalar('Validation/steps', steps, epoch)
+            
             print(f"\nValidation Result - Score: {score}, {'WON!' if won else 'Lost'}, Steps: {steps}")
             print("="*60 + "\n")
             
             # Return to training mode
             agent.model.train()
     
+    writer.close()
+    
     print(f"\n{'='*60}")
     print(f"Training Complete! Wins: {wins}/{num_epochs*batch_size} ({100*wins/(num_epochs*batch_size):.1f}%)")
+    print(f"TensorBoard logs saved to: {log_dir}")
     
-    torch.save(net.state_dict(), 'reinforcement_learning/actor_critic_trained.pth')
-    print("Model saved!")
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+    torch.save(net.state_dict(), save_model_path)
+    print(f"Model saved to: {save_model_path}")
     
     return net
 
@@ -210,7 +263,8 @@ if __name__ == "__main__":
     
     if VALIDATE:
         net = ActorCriticNetwork(memory_context=5)
-        net.load_state_dict(torch.load('reinforcement_learning/actor_critic_trained.pth'), strict=False)
+        path = 'runs/human_feedback/20260201_212205/model_checkpoint.pth'
+        net.load_state_dict(torch.load(path), strict=False)
         net.eval()
         
         agent = RLAgent(net, memory_context=5)
@@ -218,5 +272,9 @@ if __name__ == "__main__":
         score, won, steps = run_validation_game(agent, 'mediumClassic', with_graphics=True)
         print(f"Score: {score}, Won: {won}, Steps: {steps}")
     else:
+        # Load pretrained model from human feedback (set to None to train from scratch)
+        pretrained_path = 'runs/human_feedback/20260201_212205/model_checkpoint.pth'
+        
         train(num_epochs=100, batch_size=32, steps_per_epoch=20, 
-              layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=20)
+              layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=20,
+              pretrained_model_path=pretrained_path)

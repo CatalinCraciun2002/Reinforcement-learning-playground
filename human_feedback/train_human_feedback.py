@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 from models.simple_residual_conv import ActorCriticNetwork
 from human_feedback.data_loader import GameplayDataset
@@ -113,7 +114,7 @@ def prepare_training_data(dataset, memory_length=5, train_split=0.9, gamma=0.99)
     return train_data, val_data
 
 
-def train_epoch(model, train_data, optimizer, device, batch_size=32, train_critic=True):
+def train_epoch(model, train_data, optimizer, device, batch_size=32, train_critic=True, writer=None, epoch=0):
     """
     Train for one epoch.
     
@@ -124,6 +125,8 @@ def train_epoch(model, train_data, optimizer, device, batch_size=32, train_criti
         device: Device to train on
         batch_size: Batch size
         train_critic: Whether to train the critic head
+        writer: TensorBoard SummaryWriter (optional)
+        epoch: Current epoch number for logging
     
     Returns:
         (avg_actor_loss, avg_critic_loss, accuracy)
@@ -180,9 +183,13 @@ def train_epoch(model, train_data, optimizer, device, batch_size=32, train_criti
     return avg_actor_loss, avg_critic_loss, accuracy
 
 
-def validate(model, val_data, device, batch_size=32, train_critic=True):
+def validate(model, val_data, device, batch_size=32, train_critic=True, writer=None, epoch=0):
     """
     Validate the model.
+    
+    Args:
+        writer: TensorBoard SummaryWriter (optional)
+        epoch: Current epoch number for logging
     
     Returns:
         (avg_actor_loss, avg_critic_loss, accuracy)
@@ -223,7 +230,7 @@ def validate(model, val_data, device, batch_size=32, train_critic=True):
 
 
 def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
-          memory_length=5, train_critic=True, gamma=0.99, save_path='human_feedback/model_human_feedback.pth'):
+          memory_length=5, train_critic=True, gamma=0.99, save_path=None):
     """
     Train the ActorCriticNetwork using human gameplay recordings.
     
@@ -235,7 +242,7 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
         memory_length: Number of past positions to include
         train_critic: Whether to train the critic head
         gamma: Discount factor for computing returns
-        save_path: Path to save the trained model
+        save_path: Path to save the trained model (default: inside timestamped run folder)
     """
     print("="*60)
     print("Training ActorCriticNetwork from Human Gameplay")
@@ -264,6 +271,17 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
     model = ActorCriticNetwork(memory_context=memory_length).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
+    # Setup TensorBoard
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_dir = f'runs/human_feedback/{timestamp}'
+    writer = SummaryWriter(log_dir)
+    print(f"TensorBoard logging to: {log_dir}\n")
+    
+    # Set default save path inside the run folder if not specified
+    if save_path is None:
+        save_path = f'{log_dir}/model_checkpoint.pth'
+    
     # Training loop
     best_val_accuracy = 0
     
@@ -272,13 +290,21 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
     for epoch in pbar:
         # Train
         train_actor_loss, train_critic_loss, train_acc = train_epoch(
-            model, train_data, optimizer, device, batch_size, train_critic
+            model, train_data, optimizer, device, batch_size, train_critic, writer, epoch
         )
         
         # Validate
         val_actor_loss, val_critic_loss, val_acc = validate(
-            model, val_data, device, batch_size, train_critic
+            model, val_data, device, batch_size, train_critic, writer, epoch
         )
+        
+        # Log to TensorBoard
+        writer.add_scalar('Loss/train_actor', train_actor_loss, epoch)
+        writer.add_scalar('Loss/train_critic', train_critic_loss, epoch)
+        writer.add_scalar('Loss/val_actor', val_actor_loss, epoch)
+        writer.add_scalar('Loss/val_critic', val_critic_loss, epoch)
+        writer.add_scalar('Accuracy/train', train_acc, epoch)
+        writer.add_scalar('Accuracy/val', val_acc, epoch)
         
         # Update progress bar
         pbar.set_postfix({
@@ -294,10 +320,13 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
             torch.save(model.state_dict(), save_path)
             pbar.write(f"✓ Epoch {epoch+1}: New best validation accuracy: {val_acc:.3f}")
     
+    writer.close()
+    
     print("\n" + "="*60)
     print(f"Training Complete!")
     print(f"Best validation accuracy: {best_val_accuracy:.3f}")
     print(f"Model saved to: {save_path}")
+    print(f"TensorBoard logs saved to: {log_dir}")
     print("="*60)
     
     return model
@@ -309,7 +338,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train ActorCriticNetwork from human gameplay')
     parser.add_argument('--data-dir', type=str, default='game_runs_data',
                        help='Directory containing gameplay recordings')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size')
@@ -321,8 +350,8 @@ if __name__ == '__main__':
                        help='Do not train the critic head')
     parser.add_argument('--gamma', type=float, default=0.99,
                        help='Discount factor for computing returns')
-    parser.add_argument('--save-path', type=str, default='human_feedback/model_checkpoints/model_human_feedback.pth',
-                       help='Path to save the trained model')
+    parser.add_argument('--save-path', type=str, default=None,
+                       help='Path to save the trained model (default: saved inside the timestamped run folder)')
     
     args = parser.parse_args()
     
