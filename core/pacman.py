@@ -39,13 +39,13 @@ code to run a game.  This file is divided into three sections:
 To play your first game, type 'python pacman.py' from the command line.
 The keys are 'a', 's', 'd', and 'w' to move (or arrow keys).  Have fun!
 """
-from game import GameStateData
-from game import Game
-from game import Directions
-from game import Actions
-from util import nearestPoint
-from util import manhattanDistance
-import util, layout
+from core.game import GameStateData
+from core.game import Game
+from core.game import Directions
+from core.game import Actions
+from core.util import nearestPoint
+from core.util import manhattanDistance
+from core import layout
 import sys, types, time, random, os
 
 ###################################################
@@ -706,7 +706,7 @@ def runGames( layout, pacman, ghosts, display, numGames, record, numTraining = 0
     return games
 
 import numpy as np
-from evolve import genetic_algorithm_evolution
+from genetic_algorithms.evolve import genetic_algorithm_evolution
 import copy
 from tqdm import tqdm
 

@@ -12,8 +12,8 @@
 # Pieter Abbeel (pabbeel@cs.berkeley.edu).
 
 
-from util import manhattanDistance
-from game import Grid
+from core.util import manhattanDistance
+from core.game import Grid
 import os
 import random
 from functools import reduce
