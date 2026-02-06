@@ -2,7 +2,9 @@
 Train ActorCriticNetwork using Human Gameplay Recordings
 
 This script implements supervised learning (behavioral cloning) to train
-the ActorCriticNetwork model to imitate human gameplay.
+the ActorCriticNetwork model to imitate human gameplay. All recorded games
+are used for training, and validation is performed by having the model
+play games to measure actual performance.
 """
 
 import sys
@@ -14,10 +16,12 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
 
 from models.simple_residual_conv import ActorCriticNetwork
 from human_feedback.data_loader import GameplayDataset
+from runs.logger import TensorBoardLogger
+from agents.rlAgent import RLAgent
+from core.environment import PacmanEnv
 
 
 # Action mapping: string to index
@@ -26,7 +30,7 @@ ACTION_TO_IDX = {
     'South': 1,
     'East': 2,
     'West': 3,
-    'Stop': 0  # Map Stop to North (or could be handled separately)
+    'Stop': 4  # Stop is a separate action
 }
 
 
@@ -51,28 +55,32 @@ def compute_discounted_returns(episode_transitions, gamma=0.99):
     return returns
 
 
-def prepare_training_data(dataset, memory_length=5, train_split=0.9, gamma=0.99):
+def prepare_training_data(dataset, memory_length=5, gamma=0.99):
     """
-    Prepare training and validation data with returns computed.
+    Prepare training data from all episodes with returns computed.
     
     Args:
         dataset: GameplayDataset instance
         memory_length: Number of past positions to include
-        train_split: Fraction of data to use for training
         gamma: Discount factor for computing returns
     
     Returns:
-        (train_data, val_data) where each is a list of dicts with:
-        - state_tensor: Tensor with memory context
-        - action_idx: Integer action index
-        - return_value: Discounted return
+        (train_data, episode_scores) where:
+        - train_data: List of dicts with state_tensor, action_idx, return_value
+        - episode_scores: List of final scores from each episode
     """
     all_data = []
+    episode_scores = []
     
-    print("Preparing training data with returns...")
+    print("Preparing training data from all games...")
     for episode in tqdm(dataset.episodes, desc="Processing episodes"):
         walls = episode['walls']
         transitions = episode['transitions']
+        
+        # Get final score from last transition
+        if transitions:
+            final_score = transitions[-1]['state'].get('score', 0)
+            episode_scores.append(final_score)
         
         # Compute returns for this episode
         returns = compute_discounted_returns(transitions, gamma)
@@ -102,19 +110,13 @@ def prepare_training_data(dataset, memory_length=5, train_split=0.9, gamma=0.99)
                 'return': G
             })
     
-    # Shuffle and split
-    np.random.shuffle(all_data)
-    split_idx = int(len(all_data) * train_split)
+    print(f"Training samples: {len(all_data)} from {len(episode_scores)} episodes")
+    print(f"Average human score: {np.mean(episode_scores):.1f}")
     
-    train_data = all_data[:split_idx]
-    val_data = all_data[split_idx:]
-    
-    print(f"Training samples: {len(train_data)}, Validation samples: {len(val_data)}")
-    
-    return train_data, val_data
+    return all_data, episode_scores
 
 
-def train_epoch(model, train_data, optimizer, device, batch_size=32, train_critic=True, writer=None, epoch=0):
+def train_epoch(model, train_data, optimizer, device, batch_size=32, train_critic=True):
     """
     Train for one epoch.
     
@@ -125,8 +127,6 @@ def train_epoch(model, train_data, optimizer, device, batch_size=32, train_criti
         device: Device to train on
         batch_size: Batch size
         train_critic: Whether to train the critic head
-        writer: TensorBoard SummaryWriter (optional)
-        epoch: Current epoch number for logging
     
     Returns:
         (avg_actor_loss, avg_critic_loss, accuracy)
@@ -155,11 +155,18 @@ def train_epoch(model, train_data, optimizer, device, batch_size=32, train_criti
         # Actor loss (cross-entropy)
         actor_loss = nn.CrossEntropyLoss()(action_probs, actions)
         
-        # Critic loss (MSE with returns)
-        critic_loss = nn.MSELoss()(values.squeeze(), returns) if train_critic else torch.tensor(0.0)
+        # Critic loss (MSE with normalized returns)
+        if train_critic:
+            return_mean = returns.mean().detach()
+            return_std = returns.std().detach() + 1e-8
+            values_norm = (values.squeeze() - return_mean) / return_std
+            returns_norm = (returns - return_mean) / return_std
+            critic_loss = nn.MSELoss()(values_norm, returns_norm)
+        else:
+            critic_loss = torch.tensor(0.0)
         
-        # Total loss
-        total_loss = actor_loss + (0.5 * critic_loss if train_critic else 0)
+        # Total loss with coefficients
+        total_loss = 1.0 * actor_loss + 0.5 * critic_loss
         
         # Backward pass
         optimizer.zero_grad()
@@ -183,54 +190,57 @@ def train_epoch(model, train_data, optimizer, device, batch_size=32, train_criti
     return avg_actor_loss, avg_critic_loss, accuracy
 
 
-def validate(model, val_data, device, batch_size=32, train_critic=True, writer=None, epoch=0):
+
+
+def validate(model, layout_name='mediumClassic', memory_context=5, num_games=32, max_steps=1000):
     """
-    Validate the model.
+    Validate the model by playing num_games without graphics.
     
     Args:
-        writer: TensorBoard SummaryWriter (optional)
-        epoch: Current epoch number for logging
+        model: ActorCriticNetwork
+        layout_name: Name of the layout to play
+        memory_context: Memory context for the agent
+        num_games: Number of games to play for validation
+        max_steps: Maximum steps per game
     
     Returns:
-        (avg_actor_loss, avg_critic_loss, accuracy)
+        avg_score: Average score across all validation games
     """
     model.eval()
+    scores = []
     
-    total_actor_loss = 0
-    total_critic_loss = 0
-    total_correct = 0
-    num_batches = 0
+    for _ in range(num_games):
+        agent = RLAgent(model, memory_context=memory_context)
+        val_env = PacmanEnv(agent, layout_name, display=None)
+        val_env.reset()
+        
+        steps = 0
+        game_done = False
+        
+        while not game_done and steps < max_steps:
+            state = val_env.game.state
+            legal = val_env.get_legal(state)
+            
+            if not legal:
+                break
+            
+            with torch.no_grad():
+                probs, _ = agent.forward(state)
+            
+            action, action_idx = agent.getAction(legal, probs)
+            _, reward, game_done = val_env.step(action)
+            steps += 1
+        
+        score = val_env.game.state.getScore()
+        scores.append(score)
     
-    with torch.no_grad():
-        for i in range(0, len(val_data), batch_size):
-            batch = val_data[i:i + batch_size]
-            
-            states = torch.stack([item['state'] for item in batch]).to(device)
-            actions = torch.tensor([item['action'] for item in batch], dtype=torch.long).to(device)
-            returns = torch.tensor([item['return'] for item in batch], dtype=torch.float32).to(device)
-            
-            action_probs, values = model(states, return_both=True)
-            
-            actor_loss = nn.CrossEntropyLoss()(action_probs, actions)
-            critic_loss = nn.MSELoss()(values.squeeze(), returns) if train_critic else torch.tensor(0.0)
-            
-            total_actor_loss += actor_loss.item()
-            total_critic_loss += critic_loss.item() if train_critic else 0
-            
-            predicted_actions = torch.argmax(action_probs, dim=1)
-            total_correct += (predicted_actions == actions).sum().item()
-            
-            num_batches += 1
-    
-    avg_actor_loss = total_actor_loss / num_batches
-    avg_critic_loss = total_critic_loss / num_batches if train_critic else 0
-    accuracy = total_correct / len(val_data)
-    
-    return avg_actor_loss, avg_critic_loss, accuracy
+    avg_score = np.mean(scores)
+    return avg_score
 
 
 def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
-          memory_length=5, train_critic=True, gamma=0.99, save_path=None):
+          memory_length=5, train_critic=True, gamma=0.99, layout_name='mediumClassic',
+          validation_games=8, resume_from_checkpoint=None):
     """
     Train the ActorCriticNetwork using human gameplay recordings.
     
@@ -242,14 +252,21 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
         memory_length: Number of past positions to include
         train_critic: Whether to train the critic head
         gamma: Discount factor for computing returns
-        save_path: Path to save the trained model (default: inside timestamped run folder)
+        layout_name: Layout to use for validation games
+        validation_games: Number of validation games to play each epoch (default: 8)
+        resume_from_checkpoint: Path to checkpoint to resume training from (optional)
     """
+    # Set random seeds for reproducible shuffling
+    np.random.seed(42)
+    torch.manual_seed(42)
+    
     print("="*60)
     print("Training ActorCriticNetwork from Human Gameplay")
     print("="*60)
     print(f"Data directory: {data_dir}")
     print(f"Epochs: {num_epochs}, Batch size: {batch_size}, LR: {lr}")
     print(f"Memory length: {memory_length}, Train critic: {train_critic}")
+    print(f"Validation: {validation_games} games on {layout_name}")
     print("="*60 + "\n")
     
     # Load dataset
@@ -261,73 +278,95 @@ def train(data_dir='game_runs_data', num_epochs=50, batch_size=32, lr=1e-4,
     
     dataset.print_statistics()
     
-    # Prepare data
-    train_data, val_data = prepare_training_data(dataset, memory_length, gamma=gamma)
+    # Prepare training data (all games)
+    train_data, episode_scores = prepare_training_data(dataset, memory_length, gamma=gamma)
     
     # Setup model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\nUsing device: {device}\n")
+    print(f"Using device: {device}\n")
     
     model = ActorCriticNetwork(memory_context=memory_length).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
-    # Setup TensorBoard
-    from datetime import datetime
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_dir = f'runs/human_feedback/{timestamp}'
-    writer = SummaryWriter(log_dir)
-    print(f"TensorBoard logging to: {log_dir}\n")
+    # Setup logger with hyperparameters
+    hyperparams = {
+        'batch_size': batch_size,
+        'learning_rate': lr,
+        'memory_length': memory_length,
+        'gamma': gamma,
+        'train_critic': train_critic,
+        'num_epochs': num_epochs,
+        'layout': layout_name
+    }
     
-    # Set default save path inside the run folder if not specified
-    if save_path is None:
-        save_path = f'{log_dir}/model_checkpoint.pth'
+    logger = TensorBoardLogger(
+        training_type='human_feedback',
+        pretrained_model_path=resume_from_checkpoint,
+        hyperparams=hyperparams
+    )
+    
+    logger.print_header()
+    
+    # Load checkpoint (if provided)
+    start_epoch, best_val_score = logger.load_checkpoint(model, optimizer)
+    
+    # Setup TensorBoard
+    writer, log_dir, is_resuming = logger.setup_tensorboard()
+    
+    # Get checkpoint paths
+    best_checkpoint_path, last_checkpoint_path = logger.get_checkpoint_paths()
     
     # Training loop
-    best_val_accuracy = 0
+    end_epoch = start_epoch + num_epochs
     
-    pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
+    pbar = tqdm(range(start_epoch, end_epoch), desc="Training", unit="epoch", initial=start_epoch, total=end_epoch)
     
     for epoch in pbar:
         # Train
         train_actor_loss, train_critic_loss, train_acc = train_epoch(
-            model, train_data, optimizer, device, batch_size, train_critic, writer, epoch
+            model, train_data, optimizer, device, batch_size, train_critic
         )
         
-        # Validate
-        val_actor_loss, val_critic_loss, val_acc = validate(
-            model, val_data, device, batch_size, train_critic, writer, epoch
-        )
+        # Validate by playing games
+        avg_val_score = validate(model, layout_name, memory_length, validation_games)
         
         # Log to TensorBoard
-        writer.add_scalar('Loss/train_actor', train_actor_loss, epoch)
-        writer.add_scalar('Loss/train_critic', train_critic_loss, epoch)
-        writer.add_scalar('Loss/val_actor', val_actor_loss, epoch)
-        writer.add_scalar('Loss/val_critic', val_critic_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_acc, epoch)
-        writer.add_scalar('Accuracy/val', val_acc, epoch)
+        logger.log_scalars({
+            'Loss/train_actor': train_actor_loss,
+            'Loss/train_critic': train_critic_loss,
+            'Accuracy/train': train_acc,
+            'Score/validation': avg_val_score
+        }, epoch)
         
         # Update progress bar
         pbar.set_postfix({
-            'TrainAcc': f'{train_acc:.3f}',
-            'ValAcc': f'{val_acc:.3f}',
             'TrainLoss': f'{train_actor_loss:.3f}',
-            'ValLoss': f'{val_actor_loss:.3f}'
+            'TrainAcc': f'{train_acc:.3f}',
+            'ValScore': f'{avg_val_score:.0f}'
         })
         
-        # Save best model
-        if val_acc > best_val_accuracy:
-            best_val_accuracy = val_acc
-            torch.save(model.state_dict(), save_path)
-            pbar.write(f"✓ Epoch {epoch+1}: New best validation accuracy: {val_acc:.3f}")
+        # Save checkpoints
+        is_best = avg_val_score > best_val_score
+        if is_best:
+            best_val_score = avg_val_score
+            pbar.write(f"✓ Epoch {epoch+1}: New best validation score: {avg_val_score:.0f}")
+            
+        logger.save_checkpoint(
+            epoch=epoch,
+            model=model,
+            optimizer=optimizer,
+            metric_value=avg_val_score,
+            metric_name='val_score',
+            is_best=is_best
+        )
     
-    writer.close()
+    # Close logger and print summary
+    logger.close()
     
-    print("\n" + "="*60)
-    print(f"Training Complete!")
-    print(f"Best validation accuracy: {best_val_accuracy:.3f}")
-    print(f"Model saved to: {save_path}")
-    print(f"TensorBoard logs saved to: {log_dir}")
-    print("="*60)
+    logger.print_completion_summary({
+        'Best Validation Score': f"{best_val_score:.0f}"
+    })
+    print()
     
     return model
 
@@ -338,11 +377,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train ActorCriticNetwork from human gameplay')
     parser.add_argument('--data-dir', type=str, default='game_runs_data',
                        help='Directory containing gameplay recordings')
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=200,
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,
-                       help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-4,
+                       help='Batch size for training and number of validation games')
+    parser.add_argument('--lr', type=float, default=1e-5,
                        help='Learning rate')
     parser.add_argument('--memory-length', type=int, default=5,
                        help='Number of past positions to include')
@@ -350,8 +389,12 @@ if __name__ == '__main__':
                        help='Do not train the critic head')
     parser.add_argument('--gamma', type=float, default=0.99,
                        help='Discount factor for computing returns')
-    parser.add_argument('--save-path', type=str, default=None,
-                       help='Path to save the trained model (default: saved inside the timestamped run folder)')
+    parser.add_argument('--layout', type=str, default='mediumClassic',
+                       help='Layout to use for validation games')
+    parser.add_argument('--validation-games', type=int, default=8,
+                       help='Number of validation games to play each epoch')
+    parser.add_argument('--resume', type=str, default='runs\\human_feedback\\20260203_191824',
+                       help='Path to checkpoint or run directory to resume from (uses model_last.pth)')
     
     args = parser.parse_args()
     
@@ -363,5 +406,7 @@ if __name__ == '__main__':
         memory_length=args.memory_length,
         train_critic=not args.no_critic,
         gamma=args.gamma,
-        save_path=args.save_path
+        layout_name=args.layout,
+        validation_games=args.validation_games,
+        resume_from_checkpoint=args.resume
     )

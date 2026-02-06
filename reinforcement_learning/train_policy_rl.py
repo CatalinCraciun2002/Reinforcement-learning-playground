@@ -8,7 +8,6 @@ import numpy as np
 import sys
 import os
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,6 +16,8 @@ from agents.rlAgent import RLAgent
 from core.environment import PacmanEnv
 from core.game import Directions
 from display import graphicsDisplay
+from runs.logger import TensorBoardLogger
+from reinforcement_learning.epoch_visualizer import EpochVisualizer
 
 
 def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, max_steps=1000):
@@ -50,61 +51,112 @@ def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, 
 
 def train(num_epochs=100, batch_size=32, steps_per_epoch=20, 
           layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=50,
-          pretrained_model_path=None, save_model_path=None):
+          validation_games=8, pretrained_model_path=None, use_best_checkpoint=False,
+          save_visualization_data=False):
     """
     Training with GAE.
     
     Args:
+        validation_games: Number of validation games to play each epoch (default: 8)
         lam: GAE lambda for advantage propagation (default: 0.95)
-        pretrained_model_path: Path to pretrained model checkpoint (e.g., from human_feedback training)
-        save_model_path: Path to save the trained model (default: inside timestamped run folder)
+        pretrained_model_path: Path to checkpoint to load (can be from human_feedback or previous RL training)
+        use_best_checkpoint: If True and pretrained_model_path is a directory, load model_best.pth; 
+                            otherwise load model_last.pth (default: False)
+        save_visualization_data: If True, save all training data for visualization (default: False)
     """
     
-    print("="*60)
-    print(f"Training: {num_epochs} epochs, {batch_size} parallel games")
-    print(f"Layout: {layout_name}, γ={gamma}, λ={lam}, lr={lr}")
-    if pretrained_model_path:
-        print(f"Loading pretrained model: {pretrained_model_path}")
-    print("="*60)
+    # Setup logger with hyperparameters
+    hyperparams = {
+        'num_epochs': num_epochs,
+        'batch_size': batch_size,
+        'steps_per_epoch': steps_per_epoch,
+        'learning_rate': lr,
+        'gamma': gamma,
+        'lambda': lam,
+        'layout': layout_name,
+        'pretrained': pretrained_model_path is not None,
+        'use_best_checkpoint': use_best_checkpoint
+    }
     
+    logger = TensorBoardLogger(
+        training_type='rl_training',
+        pretrained_model_path=pretrained_model_path,
+        hyperparams=hyperparams
+    )
+    
+    logger.print_header()
+    
+    # Create model and optimizer
     net = ActorCriticNetwork(memory_context=5)
-    
-    # Load pretrained weights if provided
-    if pretrained_model_path and os.path.exists(pretrained_model_path):
-        try:
-            net.load_state_dict(torch.load(pretrained_model_path), strict=False)
-            print(f"✓ Successfully loaded pretrained model from {pretrained_model_path}")
-        except Exception as e:
-            print(f"⚠ Warning: Failed to load pretrained model: {e}")
-            print("  Continuing with randomly initialized weights...")
-    elif pretrained_model_path:
-        print(f"⚠ Warning: Pretrained model path specified but file not found: {pretrained_model_path}")
-        print("  Continuing with randomly initialized weights...")
-    
-    agent = RLAgent(net, memory_context=5)
     optimizer = optim.Adam(net.parameters(), lr=lr)
     
-    # Setup TensorBoard
-    from datetime import datetime
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_dir = f'runs/rl_training/{timestamp}'
-    writer = SummaryWriter(log_dir)
-    print(f"TensorBoard logging to: {log_dir}")
-    print("="*60 + "\n")
+    # Load checkpoint (if provided)
+    start_epoch, best_win_rate = logger.load_checkpoint(net, optimizer, use_best_checkpoint=use_best_checkpoint)
     
-    # Set default save path inside the run folder if not specified
-    if save_model_path is None:
-        save_model_path = f'{log_dir}/model_checkpoint.pth'
+    agent = RLAgent(net, memory_context=5)
+    
+    # Setup TensorBoard
+    writer, log_dir, is_resuming = logger.setup_tensorboard()
+    
+    # Get checkpoint paths
+    best_checkpoint_path, last_checkpoint_path = logger.get_checkpoint_paths()
+    
+    # Initialize visualizer if enabled
+    visualizer = None
+    if save_visualization_data:
+        vis_dir = os.path.join(os.path.dirname(__file__), 'visualization_data')
+        os.makedirs(vis_dir, exist_ok=True)
+        visualizer = EpochVisualizer(vis_dir, hyperparams)
     
     envs = [PacmanEnv(agent, layout_name) for _ in range(batch_size)]
     
     losses, wins, total_steps = [], 0, 0
     
-    pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
+    # Evaluate at epoch 0 if starting from a checkpoint (for baseline)
+    if start_epoch > 0 or pretrained_model_path:
+        print("=" * 60)
+        print("Computing epoch 0 baseline metrics...")
+        print("=" * 60)
+        
+        agent.model.eval()
+        
+        # Run validation games to get initial metrics
+        baseline_scores = []
+        baseline_wins = []
+        for _ in range(validation_games):
+            score, won, steps = run_validation_game(agent, layout_name, with_graphics=False)
+            baseline_scores.append(score)
+            baseline_wins.append(1 if won else 0)
+        
+        avg_score = sum(baseline_scores) / len(baseline_scores)
+        win_rate = sum(baseline_wins) / len(baseline_wins)
+        
+        # Log baseline metrics
+        logger.log_scalars({
+            'Score/score': avg_score,
+            'Score/won': win_rate,
+        }, 0)
+        
+        print(f"Baseline - Avg Score: {avg_score:.1f}, Win Rate: {win_rate:.1%}")
+        print("=" * 60 + "\n")
+        
+        agent.model.train()
+    elif start_epoch == 0:
+        print("Starting training from scratch (no baseline metrics)")
+        print("=" * 60 + "\n")
+    
+    # When resuming, train for num_epochs additional epochs beyond start_epoch
+    end_epoch = start_epoch + num_epochs
+    
+    pbar = tqdm(range(start_epoch, end_epoch), desc="Training", unit="epoch", initial=start_epoch, total=end_epoch)
     
     for epoch in pbar:
 
         agent.model.train()        
+        
+        # Initialize visualizer for this epoch
+        if visualizer:
+            visualizer.start_epoch(epoch, batch_size)
         
         # Store information for loss
         all_log_probs = []
@@ -112,7 +164,7 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
         all_entropies = []
         all_td_errors = []
 
-        for env in envs:
+        for env_idx, env in enumerate(envs):
 
             prev_states = {'td_error': [], 'game_over': []}
             episode_steps = 0
@@ -121,7 +173,7 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
             legal = env.get_legal(state)
             probs, value = agent.forward(state)
 
-            for _ in range(steps_per_epoch):
+            for step_idx in range(steps_per_epoch):
 
                 action, action_idx = agent.getAction(legal, probs)
 
@@ -139,6 +191,7 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
 
                 if done:
                     td_error = reward - value
+                    td_target = None
                     # Reset environment for next iteration
                     total_steps += episode_steps
                     episode_steps = 0
@@ -148,6 +201,22 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
                     td_target = reward + gamma * next_value.detach()
                     td_error = td_target - value
                 
+                # Record visualization data
+                if visualizer:
+                    step_data = {
+                        'state': state,
+                        'legal_actions': legal,
+                        'action_probs': probs,
+                        'selected_action': action,
+                        'selected_action_idx': action_idx,
+                        'value': value,
+                        'reward': reward,
+                        'next_value': next_value,
+                        'td_error': td_error,
+                        'td_target': td_target,
+                        'done': done
+                    }
+                    visualizer.record_step(env_idx, step_data)
 
                 prev_states['td_error'].append(td_error)
                 prev_states['game_over'].append(done)
@@ -174,6 +243,10 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
             # Reverse advantages to match original order
             advantages.reverse()
             
+            # Record advantages for visualization
+            if visualizer:
+                visualizer.record_advantages(env_idx, advantages)
+            
             all_td_errors.extend(prev_states['td_error'])
             all_advantages.extend(advantages)
             
@@ -186,12 +259,26 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
         # Normalize advantages for stable training
         all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
 
-        # Scale critic loss to match actor loss magnitude
-        critic_loss = 0.5 * (all_td_errors ** 2).mean()
-        actor_loss = -(all_log_probs * all_advantages.detach()).mean()
-        entropy_bonus = 0.01 * all_entropies.mean()
+        # Normalize TD errors for critic loss (brings loss to comparable scale)
+        td_mean = all_td_errors.mean().detach()
+        td_std = all_td_errors.std().detach() + 1e-8
+        all_td_errors_norm = (all_td_errors - td_mean) / td_std
         
-        total_loss = actor_loss + critic_loss - entropy_bonus
+        # Critic loss: MSE on normalized TD errors (range ~[0, 4])
+        critic_loss = (all_td_errors_norm ** 2).mean()
+        
+        # Actor loss
+        actor_loss = -(all_log_probs * all_advantages.detach()).mean()
+        
+        # Entropy bonus
+        entropy_bonus = all_entropies.mean()
+        
+        # Total loss with coefficients
+        total_loss = 1.0 * actor_loss + 0.5 * critic_loss - 0.01 * entropy_bonus
+        
+        # Record losses for visualization
+        if visualizer:
+            visualizer.record_losses(actor_loss, critic_loss, entropy_bonus, total_loss)
 
         # Update
         optimizer.zero_grad()
@@ -206,62 +293,98 @@ def train(num_epochs=100, batch_size=32, steps_per_epoch=20,
         win_rate = 100*wins/((epoch+1)*batch_size)
         
         # Log to TensorBoard
-        writer.add_scalar('Loss/total', total_loss.item(), epoch)
-        writer.add_scalar('Loss/actor', actor_loss.item(), epoch)
-        writer.add_scalar('Loss/critic', critic_loss.item(), epoch)
-        writer.add_scalar('Loss/entropy_bonus', entropy_bonus.item(), epoch)
-        writer.add_scalar('Performance/win_rate', win_rate, epoch)
-        writer.add_scalar('Performance/total_wins', wins, epoch)
-        writer.add_scalar('Performance/avg_steps', avg_steps, epoch)
-        writer.add_scalar('Training/advantage_mean', all_advantages.mean().item(), epoch)
-        writer.add_scalar('Training/advantage_std', all_advantages.std().item(), epoch)
+        logger.log_scalars({
+            'Loss/total': total_loss.item(),
+            'Loss/actor': actor_loss.item(),
+            'Loss/critic': critic_loss.item(),
+            'Loss/entropy_bonus': entropy_bonus.item(),
+            'Performance/total_wins': wins,
+            'Performance/avg_steps': avg_steps,
+        }, epoch)
         
+
+        
+        # Validation every epoch (without graphics), with graphics only at intervals
+        agent.model.eval()
+        
+        # Run multiple validation games and average
+        val_scores = []
+        val_wins = []
+        for _ in range(validation_games):
+            score, won, steps = run_validation_game(agent, layout_name, with_graphics=False)
+            val_scores.append(score)
+            val_wins.append(1 if won else 0)
+        
+        val_score = sum(val_scores) / len(val_scores)
+        val_won = sum(val_wins) / len(val_wins)
+        
+        agent.model.train()
+        
+        # Log validation results every epoch
+        logger.log_scalars({
+            'Score/score': val_score,
+            'Score/won': val_won
+        }, epoch)
+
         pbar.set_postfix({
-            'Loss': f'{losses[-1]:.3f}',
-            'Wins': wins,
-            'AvgSteps': f'{avg_steps:.1f}',
-            'WinRate': f'{win_rate:.1f}%'
+            'Actor': f'{actor_loss.item():.4f}',
+            'Critic': f'{critic_loss.item():.2f}',
+            'ValScore': f'{val_score:.1f}'
         })
         
-        # Validation
-        if (epoch + 1) % show_epochs == 0:
+        # Display validation with graphics at specified intervals
+        if epoch % show_epochs == 0:
             print("\n" + "="*60)
-            print(f"Running validation game at epoch {epoch+1}...")
+            print(f"Running validation game with graphics at epoch {epoch+1}...")
             print("="*60)
             
             agent.model.eval()
             score, won, steps = run_validation_game(agent, layout_name, with_graphics=True)
             
-            # Log validation results
-            writer.add_scalar('Validation/score', score, epoch)
-            writer.add_scalar('Validation/won', 1 if won else 0, epoch)
-            writer.add_scalar('Validation/steps', steps, epoch)
-            
             print(f"\nValidation Result - Score: {score}, {'WON!' if won else 'Lost'}, Steps: {steps}")
             print("="*60 + "\n")
             
-            # Return to training mode
             agent.model.train()
+
+        # Save checkpoints based on validation score
+        val_win_rate = val_won  # Already averaged from multiple games
+        is_best = val_win_rate > best_win_rate
+        if is_best:
+            best_win_rate = val_win_rate
+            
+        logger.save_checkpoint(
+            epoch=epoch,
+            model=net,
+            optimizer=optimizer,
+            metric_value=val_win_rate,
+            metric_name='win_rate',
+            is_best=is_best,
+            additional_data={'wins': wins, 'total_steps': total_steps, 'val_win_rate': val_win_rate}
+        )
+        
+        # Save visualization data for this epoch
+        if visualizer:
+            visualizer.end_epoch()
     
-    writer.close()
+    # Close logger and print summary
+    logger.close()
     
-    print(f"\n{'='*60}")
-    print(f"Training Complete! Wins: {wins}/{num_epochs*batch_size} ({100*wins/(num_epochs*batch_size):.1f}%)")
-    print(f"TensorBoard logs saved to: {log_dir}")
-    
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
-    torch.save(net.state_dict(), save_model_path)
-    print(f"Model saved to: {save_model_path}")
+    final_win_rate = f"{wins}/{(end_epoch)*batch_size} = {wins/((end_epoch)*batch_size) if (end_epoch)*batch_size > 0 else 0:.2%}"
+    logger.print_completion_summary({
+        'Final Win Rate': final_win_rate,
+        'Best Win Rate': f"{best_win_rate:.2%}",
+        'Total Steps': total_steps
+    })
     
     return net
 
 
 if __name__ == "__main__":
 
-    VALIDATE = True
+    VALIDATE = False
     
     if VALIDATE:
+        
         net = ActorCriticNetwork(memory_context=5)
         path = 'runs/human_feedback/20260201_212205/model_checkpoint.pth'
         net.load_state_dict(torch.load(path), strict=False)
@@ -273,8 +396,8 @@ if __name__ == "__main__":
         print(f"Score: {score}, Won: {won}, Steps: {steps}")
     else:
         # Load pretrained model from human feedback (set to None to train from scratch)
-        pretrained_path = 'runs/human_feedback/20260201_212205/model_checkpoint.pth'
+        pretrained_path = 'runs\human_feedback\\20260203_181930'
         
-        train(num_epochs=100, batch_size=32, steps_per_epoch=20, 
-              layout_name='mediumClassic', gamma=0.95, lam=0.95, lr=1e-5, show_epochs=20,
-              pretrained_model_path=pretrained_path)
+        train(num_epochs=20, batch_size=32, steps_per_epoch=20, 
+              layout_name='mediumClassic', gamma=0.95, lam=0.80, lr=1e-5, show_epochs=20,
+              pretrained_model_path=pretrained_path, use_best_checkpoint=True, save_visualization_data=True)
