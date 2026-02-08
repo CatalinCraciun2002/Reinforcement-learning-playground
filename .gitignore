@@ -5,3 +5,4 @@ __pycache__
 runs/human_feedback
 runs/rl_training
 *.pkl
+reinforcement_learning/learning_visualization/visualization_data
