@@ -194,9 +194,12 @@ class TensorBoardLogger:
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
             f'best_{metric_name}': self.best_metric
         }
+        
+        # Only save optimizer state if optimizer exists (e.g., not for Q-learning)
+        if optimizer is not None:
+            checkpoint['optimizer_state_dict'] = optimizer.state_dict()
         
         # Add any additional data
         if additional_data:

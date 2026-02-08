@@ -16,7 +16,7 @@ from collections import deque
 # Add parent directory to path to import game module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.game import Agent, Directions
-from models.simple_residual_conv import ActorCriticNetwork
+from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwork
 
 
 class RLAgent(Agent):

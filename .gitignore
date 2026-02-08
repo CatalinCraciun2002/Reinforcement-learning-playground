@@ -2,7 +2,7 @@ venv
 .idea
 __pycache__
 /genetic_algorithms/agent_checkpoints
-runs/human_feedback
-runs/rl_training
+runs/**/*
+!runs/logger.py
 *.pkl
 reinforcement_learning/learning_visualization/visualization_data

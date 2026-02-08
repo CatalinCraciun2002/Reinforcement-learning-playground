@@ -12,7 +12,7 @@ import os
 # Add parent directory to path to import game module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.game import Agent, Directions
-from reinforcement_learning.dqn_model import DQN
+from models.deep_qlearning_models.dqn_model import DQN
 
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
