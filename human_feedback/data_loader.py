@@ -127,8 +127,8 @@ class GameplayDataset:
             memory_length: Number of past positions to include as memory channels
         
         Returns:
-            Tensor with (5 + memory_length) channels: 
-            [pacman, ghosts, walls, scared_ghosts, food, pos_history_1, ..., pos_history_N]
+            Tensor with (6 + memory_length) channels: 
+            [pacman, ghosts, walls, scared_ghosts, food, capsules, pos_history_1, ..., pos_history_N]
         """
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is required for state_to_tensor. Please install torch.")
@@ -136,8 +136,8 @@ class GameplayDataset:
         food_grid = state_dict['food_grid']
         width, height = food_grid.shape[0], food_grid.shape[1]
         
-        # Initialize 5 base channels (height, width)
-        channels = np.zeros((5, height, width), dtype=np.float32)
+        # Initialize 6 base channels (height, width)
+        channels = np.zeros((6, height, width), dtype=np.float32)
         
         # Channel 0: Pacman position
         px, py = state_dict['pacman_pos']
@@ -156,8 +156,19 @@ class GameplayDataset:
         # Channel 2: Walls
         channels[2] = walls.T
         
-        # Channel 4: Food
+        # Channel 4: Food (regular pellets only, excluding capsules)
+        food_grid = state_dict['food_grid'].copy()
+        capsule_positions = state_dict.get('capsules', [])
+        
+        # Remove capsule positions from food grid
+        for cx, cy in capsule_positions:
+            if 0 <= int(cx) < food_grid.shape[0] and 0 <= int(cy) < food_grid.shape[1]:
+                food_grid[int(cx), int(cy)] = 0
         channels[4] = food_grid.T
+        
+        # Channel 5: Capsules (power pellets)
+        for cx, cy in capsule_positions:
+            channels[5, int(cy), int(cx)] = 1.0
         
         # Add memory channels (past Pacman positions)
         if past_positions is None:
@@ -191,7 +202,7 @@ class GameplayDataset:
             memory_length: Number of past Pacman positions to include
         
         Returns:
-            states: Tensor of shape (batch_size, 5 + memory_length, height, width)
+            states: Tensor of shape (batch_size, 6 + memory_length, height, width)
             actions: List of action strings
             rewards: Tensor of shape (batch_size,)
         """
@@ -261,7 +272,7 @@ def main():
         print("Example: Loading a batch of 8 transitions with memory_length=5...")
         states, actions, rewards = dataset.get_training_batch(batch_size=8, memory_length=5)
         print(f"  States shape: {states.shape}")
-        print(f"  Expected shape: (8, 10, height, width) = (batch, 5 base + 5 memory, H, W)")
+        print(f"  Expected shape: (8, 11, height, width) = (batch, 6 base + 5 memory, H, W)")
         print(f"  Actions: {actions}")
         print(f"  Rewards: {rewards.numpy()}")
     elif len(dataset.episodes) > 0:

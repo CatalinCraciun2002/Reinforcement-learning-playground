@@ -3,7 +3,7 @@ Agent for Pacman Reinforcement Learning
 
 The agent uses a unified Actor-Critic network to predict action probabilities
 and value estimates for a given game state.
-Input: 5-channel grid (pacman, ghost, wall, scared ghost, food)
+Input: 6-channel grid (pacman, ghost, wall, scared ghost, food, capsules)
 Output: 4 action probabilities (North, South, East, West)
 """
 
@@ -31,24 +31,25 @@ class RLAgent(Agent):
     
     def state_to_tensor(self, state):
         """
-        Convert game state to 5-channel tensor.
+        Convert game state to 6-channel tensor.
         
         Channels:
         0: Pacman position
         1: Ghost positions
         2: Walls
         3: Scared ghosts
-        4: Food
+        4: Food (regular pellets only)
+        5: Capsules (power pellets)
         
         Returns:
-            torch.Tensor: Shape (1, 5, height, width)
+            torch.Tensor: Shape (1, 6, height, width)
         """
         # Get grid dimensions
         walls = state.getWalls()
         width, height = walls.width, walls.height
         
-        # 5 base channels
-        channels = np.zeros((5, height, width), dtype=np.float32)
+        # 6 base channels
+        channels = np.zeros((6, height, width), dtype=np.float32)
         
         # Channel 0: Pacman
         x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
@@ -62,9 +63,19 @@ class RLAgent(Agent):
         # Channel 2: Walls (vectorized)
         channels[2] = np.array([[walls[x][y] for y in range(height)] for x in range(width)], dtype=np.float32).T
         
-        # Channel 4: Food (vectorized)
+        # Channel 4: Food (vectorized, excluding capsules)
         food = state.getFood()
-        channels[4] = np.array([[food[x][y] for y in range(height)] for x in range(width)], dtype=np.float32).T
+        capsules = state.getCapsules()
+        food_array = np.array([[food[x][y] for y in range(height)] for x in range(width)], dtype=np.float32).T
+        
+        # Remove capsule positions from food channel
+        for cx, cy in capsules:
+            food_array[int(cy), int(cx)] = 0.0
+        channels[4] = food_array
+        
+        # Channel 5: Capsules (power pellets)
+        for cx, cy in capsules:
+            channels[5, int(cy), int(cx)] = 1.0
         
         # Append position history channels
         for pos_channel in self.position_buffer:

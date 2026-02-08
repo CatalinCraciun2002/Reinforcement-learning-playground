@@ -4,8 +4,8 @@ Actor-Critic Multitask Model for Pacman Reinforcement Learning
 This model combines actor (policy) and critic (value) networks with shared backbone.
 Uses position-based memory: appends Pacman position history as additional channels.
 
-Input: (5 + memory_context) channels
-  - 5 channels: current state (pacman, ghosts, walls, scared ghosts, food)
+Input: (6 + memory_context) channels
+  - 6 channels: current state (pacman, ghosts, walls, scared ghosts, food, capsules)
   - memory_context channels: Pacman positions from previous timesteps
 """
 
@@ -41,7 +41,7 @@ class ActorCriticNetwork(nn.Module):
     def __init__(self, memory_context=5, conv_channels=64, num_residual_blocks=3):
         super().__init__()
         
-        input_channels = 5 + memory_context  # Current state + position history
+        input_channels = 6 + memory_context  # Current state + position history
         
         # Shared backbone
         self.conv_input = nn.Conv2d(input_channels, conv_channels, 3, padding=1)

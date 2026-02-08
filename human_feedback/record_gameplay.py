@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import datetime
 import pickle
-import csv
 import numpy as np
 
 from core import layout
@@ -201,39 +200,17 @@ class RecordingEnvironment:
             }
         }
         
-        # Save pickle file (full data)
+        # Save pickle file
         pkl_path = os.path.join(output_dir, f'{base_name}.pkl')
         with open(pkl_path, 'wb') as f:
             pickle.dump(episode_data, f)
-        
-        # Save CSV summary (human-readable)
-        csv_path = os.path.join(output_dir, f'{base_name}.csv')
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'step', 'action', 'reward', 'pacman_x', 'pacman_y', 
-                'food_remaining', 'done'
-            ])
-            
-            for t in self.transitions:
-                writer.writerow([
-                    t['step'],
-                    t['action'],
-                    f"{t['reward']:.1f}",
-                    t['state']['pacman_pos'][0],
-                    t['state']['pacman_pos'][1],
-                    np.sum(t['state']['food_grid']),
-                    t['done']
-                ])
         
         print(f"\n{'='*60}")
         print(f"Game Over! {outcome}")
         print(f"Final Score: {final_score}")
         print(f"Total Steps: {len(self.transitions)}")
         print(f"Total Reward: {sum(t['reward'] for t in self.transitions):.1f}")
-        print(f"\n✓ Data saved to:")
-        print(f"  Pickle: {pkl_path}")
-        print(f"  CSV:    {csv_path}")
+        print(f"\n✓ Data saved to: {pkl_path}")
         print(f"{'='*60}")
 
 
