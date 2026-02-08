@@ -577,14 +577,14 @@ def readCommand( argv ):
 
     # Choose a display format
     if options.quietGraphics:
-        import textDisplay
+        import display.textDisplay as textDisplay
         args['display'] = textDisplay.NullGraphics()
     elif options.textGraphics:
-        import textDisplay
+        import display.textDisplay as textDisplay
         textDisplay.SLEEP_TIME = options.frameTime
         args['display'] = textDisplay.PacmanGraphics()
     else:
-        import graphicsDisplay
+        import display.graphicsDisplay as graphicsDisplay
         args['display'] = graphicsDisplay.PacmanGraphics(options.zoom, frameTime = options.frameTime)
     args['numGames'] = options.numGames
     args['record'] = options.record
@@ -631,7 +631,8 @@ def loadAgent(pacman, nographics):
     raise Exception('The agent ' + pacman + ' is not specified in any *Agents.py.')
 
 def replayGame( layout, actions, display ):
-    import pacmanAgents, ghostAgents
+    import agents.pacmanAgents as pacmanAgents
+    import agents.ghostAgents as ghostAgents
     rules = ClassicGameRules()
     agents = [pacmanAgents.GreedyAgent()] + [ghostAgents.RandomGhost(i+1) for i in range(layout.getNumGhosts())]
     game = rules.newGame( layout, agents[0], agents[1:], display )
@@ -713,10 +714,10 @@ from tqdm import tqdm
 def change_display(quiet, zoom, frameTime=0):
 
     if quiet:
-        import textDisplay
+        import display.textDisplay as textDisplay
         return textDisplay.NullGraphics()
     else:
-        import graphicsDisplay
+        import display.graphicsDisplay as graphicsDisplay
         return graphicsDisplay.PacmanGraphics(zoom, frameTime = frameTime)
 
 
