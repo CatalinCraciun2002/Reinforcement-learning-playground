@@ -359,21 +359,25 @@ class BaseTrainer(ABC):
         """
         if self.visualizer:
             self.visualizer.record_advantages(env_idx, advantages)
-    
-    def on_visualization_losses(self, actor_loss: float, critic_loss: float, 
-                                entropy_bonus: float, total_loss: float):
+
+    def on_visualization_batch_losses(self, actor_loss: torch.Tensor, critic_loss: torch.Tensor, 
+                                all_entropies: torch.Tensor, total_loss: torch.Tensor, 
+                                batch_size: int, steps_per_epoch: int):
         """
-        Called after loss computation if visualization is enabled.
-        Override to record loss components for analysis.
+        Called after loss calculation if visualization is enabled.
+        Override to record loss values for analysis.
         
         Args:
-            actor_loss: Actor loss value
-            critic_loss: Critic loss value
-            entropy_bonus: Entropy bonus value
-            total_loss: Total combined loss
+            actor_loss: Actor loss values
+            critic_loss: Critic loss values
+            all_entropies: Entropy values
+            total_loss: Total loss values
+            batch_size: Batch size
+            steps_per_epoch: Number of steps per epoch
         """
         if self.visualizer:
-            self.visualizer.record_losses(actor_loss, critic_loss, entropy_bonus, total_loss)
+            self.visualizer.record_batch_losses(actor_loss, critic_loss, all_entropies, total_loss, batch_size, steps_per_epoch)
+    
     
     def on_visualization_epoch_end(self):
         """
@@ -382,3 +386,4 @@ class BaseTrainer(ABC):
         """
         if self.visualizer:
             self.visualizer.end_epoch()
+

@@ -9,10 +9,11 @@ import argparse
 import pygame
 from pygame.locals import *
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_root)
 
-from reinforcement_learning.epoch_visualizer import load_visualization_data
+from reinforcement_learning.training_visualization.epoch_visualizer import load_visualization_data
 from display import graphicsUtils
 from core.game import Directions
 
@@ -77,8 +78,16 @@ class ControlPanel:
         return self.epochs[self.current_epoch]['environments'][self.current_env]['steps'][self.current_step]
     
     def get_current_losses(self):
-        """Get losses for the current epoch"""
-        return self.epochs[self.current_epoch]['losses']
+        """Get losses for the current step"""
+        step_data = self.get_current_step_data()
+        if step_data.get('actor_loss') is not None:
+            return {
+                'actor': step_data['actor_loss'],
+                'critic': step_data['critic_loss'],
+                'entropy': step_data['entropy'],
+                'total': step_data['total_loss']
+            }
+        return None
     
     def handle_key(self, key):
         """Handle keyboard input"""
@@ -240,8 +249,8 @@ class ControlPanel:
         
         y += 10
         
-        # Epoch losses
-        y = self._draw_section_header(screen, "Epoch Losses", x_margin, y)
+        # Step losses
+        y = self._draw_section_header(screen, "Step Losses", x_margin, y)
         y += line_height
         
         losses = self.get_current_losses()
@@ -249,7 +258,7 @@ class ControlPanel:
             loss_items = [
                 f"  Actor: {losses['actor']:.4f}",
                 f"  Critic: {losses['critic']:.4f}",
-                f"  Entropy: {losses['entropy_bonus']:.4f}",
+                f"  Entropy: {losses['entropy']:.4f}",
                 f"  Total: {losses['total']:.4f}",
             ]
             for item in loss_items:
@@ -629,7 +638,8 @@ class PolicyVisualizer:
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize RL training data')
-    parser.add_argument('data_dir', help='Path to visualization data directory')
+    parser.add_argument('--data_dir', help='Path to visualization data directory',
+     default='runs/policy_gradient/20260209_221917/visualization_data/vis_20260209_221917')
     
     args = parser.parse_args()
     

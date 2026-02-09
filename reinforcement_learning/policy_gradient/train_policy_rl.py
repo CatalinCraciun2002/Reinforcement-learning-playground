@@ -61,7 +61,7 @@ class PolicyGradientTrainer(BaseTrainer):
         layout_name='mediumClassic',
         gamma=0.95,
         lam=0.95,
-        lr=1e-5,
+        lr=1e-4,
         memory_context=5,
         show_epochs=50,
         validation_games=8,
@@ -114,7 +114,7 @@ class PolicyGradientTrainer(BaseTrainer):
         
         # Initialize base class
         super().__init__(
-            training_type='rl_training',
+            training_type='policy_gradient',
             num_epochs=num_epochs,
             hyperparams=hyperparams,
             resume_from=resume_from,
@@ -144,14 +144,18 @@ class PolicyGradientTrainer(BaseTrainer):
         # Create environments
         self.envs = [PacmanEnv(self.agent, self.layout_name) for _ in range(self.batch_size)]
         
+        
         # Create visualizer if enabled
         if self.save_visualization_data:
             self.visualizer = self.create_visualizer()
     
+    
     def create_visualizer(self):
         """Create EpochVisualizer instance."""
         from reinforcement_learning.training_visualization.epoch_visualizer import EpochVisualizer
-        vis_dir = os.path.join(os.path.dirname(__file__), '..', 'training_visualization', 'visualization_data')
+        
+        # Store visualization data in the same directory as TensorBoard logs
+        vis_dir = os.path.join(self.log_dir, 'visualization_data')
         os.makedirs(vis_dir, exist_ok=True)
         return EpochVisualizer(vis_dir, self.hyperparams)
     
@@ -256,30 +260,28 @@ class PolicyGradientTrainer(BaseTrainer):
         all_entropies = torch.stack(all_entropies)
         all_td_errors = torch.stack(all_td_errors)
         
-        # Normalize advantages for stable training
-        all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
-        
-        # Normalize TD errors for critic loss (brings loss to comparable scale)
-        td_mean = all_td_errors.mean().detach()
-        td_std = all_td_errors.std().detach() + 1e-8
-        all_td_errors_norm = (all_td_errors - td_mean) / td_std
-        
         # Critic loss: MSE on normalized TD errors (range ~[0, 4])
-        critic_loss = (all_td_errors_norm ** 2).mean()
-        
+        # td_mean = all_td_errors.mean().detach()
+        # td_std = all_td_errors.std().detach() + 1e-8
+        # all_td_errors = (all_td_errors - td_mean) / td_std
+        critic_loss = (all_td_errors ** 2)
+
         # Actor loss
-        actor_loss = -(all_log_probs * all_advantages.detach()).mean()
-        
-        # Entropy bonus
-        entropy_bonus = all_entropies.mean()
-        
-        # Total loss with coefficients
-        total_loss = 1.0 * actor_loss + 0.5 * critic_loss - 0.01 * entropy_bonus
-        
-        # Record losses for visualization
+        #all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+        actor_loss = -(all_log_probs * all_advantages.detach())
+
+        total_loss = 1.0 * actor_loss + 0.5 * critic_loss - 0.01 * all_entropies
+
+        # Record losses for visualization (per environment, per step)
         if self.save_visualization_data:
-            self.on_visualization_losses(actor_loss, critic_loss, entropy_bonus, total_loss)
-        
+            self.on_visualization_batch_losses(actor_loss, critic_loss, all_entropies, total_loss,
+                                         self.batch_size, self.steps_per_epoch)
+
+        actor_loss = actor_loss.mean()
+        critic_loss = critic_loss.mean()
+        entropy = all_entropies.mean()
+        total_loss = total_loss.mean()
+
         # Update
         self.optimizer.zero_grad()
         total_loss.backward()
@@ -299,7 +301,7 @@ class PolicyGradientTrainer(BaseTrainer):
             'Loss/total': total_loss.item(),
             'Loss/actor': actor_loss.item(),
             'Loss/critic': critic_loss.item(),
-            'Loss/entropy_bonus': entropy_bonus.item(),
+            'Loss/entropy_bonus': entropy.item(),
             'Performance/total_wins': self.wins,
             'Performance/avg_steps': avg_steps,
         }
@@ -378,19 +380,19 @@ def main():
     parser.add_argument('--steps-per-epoch', type=int, default=20, help='Steps per environment per epoch')
     parser.add_argument('--layout', type=str, default='mediumClassic', help='Layout name')
     parser.add_argument('--gamma', type=float, default=0.95, help='Discount factor')
-    parser.add_argument('--lam', type=float, default=0.95, help='GAE lambda parameter')
-    parser.add_argument('--lr', type=float, default=1e-5, help='Learning rate')
+    parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
-    parser.add_argument('--show-epochs', type=int, default=50, 
+    parser.add_argument('--show-epochs', type=int, default=10, 
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
-                       help='Load best checkpoint instead of last')
+                       help='Load best checkpoint instead of last', default=False)
     parser.add_argument('--save-visualization-data', action='store_true',
-                       help='Save training data for visualization')
+                       help='Save training data for visualization', default=True)
     
     args = parser.parse_args()
     

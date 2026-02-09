@@ -14,7 +14,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from reinforcement_learning.base_trainer import BaseTrainer
-from agents.qlearning_agents.dqn_agent import DQNAgent, Directions
+from agents.deep_qlearning_agents.dqn_agent import DQNAgent, Directions
 from models.deep_qlearning_models.dqn_model import DQN
 import core.layout as layout_module
 from core.pacman import ClassicGameRules

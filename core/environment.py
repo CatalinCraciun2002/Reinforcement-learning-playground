@@ -11,16 +11,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import layout
 from core.pacman import ClassicGameRules
 from display import textDisplay
-from agents import ghostAgents
+from agents.base_agents import ghostAgents
 from core.game import Directions
 
 # Reward Constants - All rewards/penalties defined here
 REWARD_FOOD = 10          # Reward for eating a food pellet
 REWARD_CAPSULE = 50       # Reward for eating a power capsule
 REWARD_GHOST = 200        # Reward for eating a scared ghost
-REWARD_WIN = 500          # Reward for winning (eating all food)
-PENALTY_DEATH = -500      # Penalty for being killed by a ghost
-PENALTY_TIME = -1         # Penalty per step (encourages faster play)
+REWARD_WIN = 1000          # Reward for winning (eating all food)
+PENALTY_DEATH = -1000      # Penalty for being killed by a ghost
+PENALTY_TIME = -1        # Penalty per step (encourages faster play)
+
+# Reward scaling to normalize to [-1, 1] range
+REWARD_SCALE = 1000.0     # Maximum absolute reward value
 
 
 class PacmanEnv:
@@ -45,6 +48,9 @@ class PacmanEnv:
         
         # Initialize display for graphics
         self.display.initialize(self.game.state.data)
+        
+        # Add extra ghost after display is initialized
+        self.add_to_layout_ghost()
         
     
     def step(self, action):
@@ -102,7 +108,10 @@ class PacmanEnv:
             elif self.game.state.isLose():
                 reward += PENALTY_DEATH
         
-        return self.game.state, reward, done
+        # Scale reward to [-1, 1] range
+        scaled_reward = reward / REWARD_SCALE
+        
+        return self.game.state, scaled_reward, done
     
     @property
     def is_over(self):
@@ -118,3 +127,56 @@ class PacmanEnv:
             legal.remove(Directions.STOP)
         
         return legal
+    
+    def add_directional_ghost(self, position, prob_attack=0.8, prob_scaredFlee=0.8):
+        """
+        Add a DirectionalGhost agent at the specified position.
+        
+        Args:
+            position: (x, y) tuple for ghost position
+            prob_attack: Probability of attacking when not scared
+            prob_scaredFlee: Probability of fleeing when scared
+        """
+        from agents.base_agents.ghostAgents import DirectionalGhost
+        from core.game import AgentState, Configuration
+        
+        # Create new ghost agent with next available index
+        ghost_index = len(self.game.agents)
+        ghost_agent = DirectionalGhost(ghost_index, prob_attack, prob_scaredFlee)
+        
+        # Add ghost agent to the game
+        self.game.agents.append(ghost_agent)
+        
+        # Create ghost state and add to game state
+        ghost_state = AgentState(Configuration(position, Directions.STOP), False)
+        self.game.state.data.agentStates.append(ghost_state)
+        
+        # If display has been initialized, add the ghost image
+        if hasattr(self.game.display, 'agentImages'):
+            ghost_image = self.game.display.drawGhost(ghost_state, ghost_index)
+            self.game.display.agentImages.append((ghost_state, ghost_image))
+
+
+
+    def add_to_layout_ghost(self):
+        # Add DirectionalGhost in the corridor where Pacman starts (on random side)
+        import random
+
+
+        pacman_pos = self.game.state.getPacmanPosition()
+        
+        # Place ghost on random side (left or right) of Pacman
+        # Assumes corridor is horizontal - adjust x coordinate
+        side = random.choice([-1, 1])  # -1 for left, 1 for right
+        
+        # Find a valid position in the corridor (3 units away from pacman)
+        ghost_x = int(pacman_pos[0] + side * 3)
+        ghost_y = int(pacman_pos[1])
+        ghost_pos = (ghost_x, ghost_y)
+        
+        # Add the DirectionalGhost
+        self.add_directional_ghost(ghost_pos, prob_attack=1, prob_scaredFlee=0)
+
+            
+            
+            

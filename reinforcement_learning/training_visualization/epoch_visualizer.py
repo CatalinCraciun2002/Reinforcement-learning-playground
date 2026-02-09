@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import numpy as np
+import torch
 
 
 class EpochVisualizer:
@@ -31,17 +32,15 @@ class EpochVisualizer:
                             'td_error': float,
                             'td_target': float or None (None if terminal),
                             'done': bool,
-                            'advantage': float (filled after GAE calculation)
+                            'advantage': float (filled after GAE calculation),
+                            'actor_loss': float (filled after loss calculation),
+                            'critic_loss': float (filled after loss calculation),
+                            'entropy': float (filled after loss calculation),
+                            'total_loss': float (filled after loss calculation)
                         }
                     ]
                 }
-            ],
-            'losses': {
-                'actor': float,
-                'critic': float,
-                'entropy_bonus': float,
-                'total': float
-            }
+            ]
         }
     """
     
@@ -53,11 +52,11 @@ class EpochVisualizer:
             save_dir: Base directory to save visualization data
             hyperparams: Training hyperparameters for metadata
         """
-        # Create timestamped directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.save_path = os.path.join(save_dir, f"vis_{timestamp}")
+        # Save directly to the provided directory (no timestamp subdirectory)
+        self.save_path = save_dir
         os.makedirs(self.save_path, exist_ok=True)
         
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.hyperparams = hyperparams
         self.epochs = {}
         self.current_epoch = None
@@ -76,8 +75,7 @@ class EpochVisualizer:
         """Start recording a new epoch."""
         self.current_epoch = epoch_num
         self.epochs[epoch_num] = {
-            'environments': [{'steps': []} for _ in range(batch_size)],
-            'losses': None
+            'environments': [{'steps': []} for _ in range(batch_size)]
         }
     
     def record_step(self, env_idx: int, step_data: Dict[str, Any]):
@@ -137,7 +135,11 @@ class EpochVisualizer:
             'td_error': to_float(step_data['td_error']),
             'td_target': to_float(step_data.get('td_target')),
             'done': step_data['done'],
-            'advantage': None  # Will be filled later
+            'advantage': None,  # Will be filled later
+            'actor_loss': None,  # Will be filled after loss calculation
+            'critic_loss': None,  # Will be filled after loss calculation
+            'entropy': None,  # Will be filled after loss calculation
+            'total_loss': None  # Will be filled after loss calculation
         }
         
         self.epochs[self.current_epoch]['environments'][env_idx]['steps'].append(step_record)
@@ -166,25 +168,79 @@ class EpochVisualizer:
             else:
                 step['advantage'] = float(adv)
     
-    def record_losses(self, actor_loss: float, critic_loss: float, 
-                      entropy_bonus: float, total_loss: float):
-        """Record loss values for the current epoch."""
+    def to_float(self, x):
+        if torch.is_tensor(x):
+            return x.item()
+        return float(x)
+
+    def record_losses(self, env_idx: int, step_idx: int, 
+                      actor_loss: float, critic_loss: float, 
+                      entropy: float, total_loss: float):
+        """
+        Record loss values for a specific environment and step.
+        
+        Args:
+            env_idx: Index of the environment
+            step_idx: Index of the step within that environment
+            actor_loss: Actor loss value (scalar or tensor)
+            critic_loss: Critic loss value (scalar or tensor)
+            entropy: Entropy value (scalar or tensor)
+            total_loss: Total loss value (scalar or tensor)
+        """
+        if self.current_epoch is None:
+            raise RuntimeError("Must call start_epoch before recording losses")
+        
+      
+        
+        steps = self.epochs[self.current_epoch]['environments'][env_idx]['steps']
+        
+        if step_idx >= len(steps):
+            raise ValueError(f"Step index {step_idx} out of range (max: {len(steps)-1})")
+        
+        steps[step_idx]['actor_loss'] = self.to_float(actor_loss)
+        steps[step_idx]['critic_loss'] = self.to_float(critic_loss)
+        steps[step_idx]['entropy'] = self.to_float(entropy)
+        steps[step_idx]['total_loss'] = self.to_float(total_loss)
+    
+    def record_batch_losses(self, actor_loss, critic_loss, entropy, total_loss, 
+                           batch_size: int, steps_per_epoch: int):
+        """
+        Record loss values for all environments and steps in a batch.
+        Handles reshaping and iteration internally.
+        
+        Args:
+            actor_loss: Tensor of shape (batch_size * steps_per_epoch,)
+            critic_loss: Tensor of shape (batch_size * steps_per_epoch,)
+            entropy: Tensor of shape (batch_size * steps_per_epoch,)
+            total_loss: Tensor of shape (batch_size * steps_per_epoch,)
+            batch_size: Number of parallel environments
+            steps_per_epoch: Number of steps per environment
+        """
         if self.current_epoch is None:
             raise RuntimeError("Must call start_epoch before recording losses")
         
         import torch
         
-        def to_float(x):
-            if torch.is_tensor(x):
-                return x.item()
-            return float(x)
+        # Reshape losses from (batch_size * steps_per_epoch,) to (batch_size, steps_per_epoch)
+        actor_loss_reshaped = actor_loss.view(batch_size, steps_per_epoch)
+        critic_loss_reshaped = critic_loss.view(batch_size, steps_per_epoch)
+        entropy_reshaped = entropy.view(batch_size, steps_per_epoch)
+        total_loss_reshaped = total_loss.view(batch_size, steps_per_epoch)
         
-        self.epochs[self.current_epoch]['losses'] = {
-            'actor': to_float(actor_loss),
-            'critic': to_float(critic_loss),
-            'entropy_bonus': to_float(entropy_bonus),
-            'total': to_float(total_loss)
-        }
+        for env_idx, actor_loss_env, critic_loss_env, entropy_env, total_loss_env in \
+            zip(range(batch_size), actor_loss_reshaped, critic_loss_reshaped, entropy_reshaped, total_loss_reshaped):
+            
+            for step_idx, actor_loss_step, critic_loss_step, entropy_step, total_loss_step in \
+                zip(range(steps_per_epoch), actor_loss_env, critic_loss_env, entropy_env, total_loss_env):
+                
+                self.record_losses(
+                    env_idx=env_idx,
+                    step_idx=step_idx,
+                    actor_loss=actor_loss_step,
+                    critic_loss=critic_loss_step,
+                    entropy=entropy_step,
+                    total_loss=total_loss_step
+                )
     
     def end_epoch(self):
         """Mark the end of the current epoch and save data."""
