@@ -7,6 +7,7 @@ Simplified environment interface for training.
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import random
 
 from core import layout
 from core.pacman import ClassicGameRules
@@ -29,13 +30,14 @@ REWARD_SCALE = 1000.0     # Maximum absolute reward value
 class PacmanEnv:
     """Lightweight Pacman environment for RL training."""
     
-    def __init__(self, agent, layout_name='mediumClassic', display=None, allow_stop=True):
+    def __init__(self, agent, layout_name='mediumClassic', add_extra_ghost=False, display=None, allow_stop=True):
         self.agent = agent
         self.layout_name = layout_name
         self.display = display or textDisplay.NullGraphics()
         self.game = None
         self.wins = 0
         self.allow_stop = allow_stop
+        self.add_extra_ghost = add_extra_ghost
         self.reset()
     
     def reset(self):
@@ -50,7 +52,8 @@ class PacmanEnv:
         self.display.initialize(self.game.state.data)
         
         # Add extra ghost after display is initialized
-        self.add_to_layout_ghost()
+        if self.add_extra_ghost:
+            self.add_to_layout_ghost()
         
     
     def step(self, action):
@@ -160,9 +163,7 @@ class PacmanEnv:
 
     def add_to_layout_ghost(self):
         # Add DirectionalGhost in the corridor where Pacman starts (on random side)
-        import random
-
-
+        
         pacman_pos = self.game.state.getPacmanPosition()
         
         # Place ghost on random side (left or right) of Pacman

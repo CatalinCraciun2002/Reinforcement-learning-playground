@@ -24,7 +24,7 @@ from display import graphicsDisplay
 def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, max_steps=1000):
     """Run a validation game and return score, win status, and steps taken."""
     display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05) if with_graphics else None
-    val_env = PacmanEnv(agent, layout_name, display)
+    val_env = PacmanEnv(agent, layout_name, display, add_extra_ghost=True)
     val_env.reset()
     
     steps = 0
@@ -142,7 +142,7 @@ class PolicyGradientTrainer(BaseTrainer):
         self.agent = RLAgent(self.model, memory_context=self.memory_context)
         
         # Create environments
-        self.envs = [PacmanEnv(self.agent, self.layout_name) for _ in range(self.batch_size)]
+        self.envs = [PacmanEnv(self.agent, self.layout_name, add_extra_ghost=True) for _ in range(self.batch_size)]
         
         
         # Create visualizer if enabled
@@ -375,7 +375,7 @@ class PolicyGradientTrainer(BaseTrainer):
 
 def main():
     parser = argparse.ArgumentParser(description='Policy Gradient (Actor-Critic) Pacman Training')
-    parser.add_argument('--num-epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--num-epochs', type=int, default=500, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
     parser.add_argument('--steps-per-epoch', type=int, default=20, help='Steps per environment per epoch')
     parser.add_argument('--layout', type=str, default='mediumClassic', help='Layout name')
@@ -387,12 +387,12 @@ def main():
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
-    parser.add_argument('--resume', type=str, default=None,
+    parser.add_argument('--resume', type=str, default='runs\policy_gradient\\20260209_224327',
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
                        help='Load best checkpoint instead of last', default=False)
     parser.add_argument('--save-visualization-data', action='store_true',
-                       help='Save training data for visualization', default=True)
+                       help='Save training data for visualization', default=False)
     
     args = parser.parse_args()
     
