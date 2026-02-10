@@ -24,7 +24,7 @@ from display import graphicsDisplay
 def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, max_steps=1000):
     """Run a validation game and return score, win status, and steps taken."""
     display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05) if with_graphics else None
-    val_env = PacmanEnv(agent, layout_name, display, add_extra_ghost=True)
+    val_env = PacmanEnv(agent, layout_name, add_extra_ghost=True, display=display)
     val_env.reset()
     
     steps = 0
@@ -141,8 +141,11 @@ class PolicyGradientTrainer(BaseTrainer):
         # Create agent
         self.agent = RLAgent(self.model, memory_context=self.memory_context)
         
-        # Create environments
-        self.envs = [PacmanEnv(self.agent, self.layout_name, add_extra_ghost=True) for _ in range(self.batch_size)]
+        # Create environments with proper env_id tracking
+        self.envs = [
+            PacmanEnv(self.agent, self.layout_name, add_extra_ghost=True, env_id=i) 
+            for i in range(self.batch_size)
+        ]
         
         
         # Create visualizer if enabled
@@ -160,60 +163,90 @@ class PolicyGradientTrainer(BaseTrainer):
         return EpochVisualizer(vis_dir, self.hyperparams)
     
     def train_epoch(self, epoch):
-        """Train for one epoch using GAE."""
+        """Train for one epoch using GAE with batched forward passes."""
         self.model.train()
         
         # Start visualization for this epoch
         if self.save_visualization_data:
             self.on_visualization_epoch_start(epoch, self.batch_size)
         
-        # Storage for training data
-        all_log_probs = []
-        all_advantages = []
-        all_entropies = []
-        all_td_errors = []
+        # Storage per environment
+        env_data = [
+            {
+                'log_probs': [],
+                'entropies': [],
+                'td_errors': [],
+                'game_overs': [],
+                'episode_steps': 0
+            }
+            for _ in range(self.batch_size)
+        ]
         
-        for env_idx, env in enumerate(self.envs):
-            prev_states = {'td_error': [], 'game_over': []}
-            episode_steps = 0
+        # Get initial states from all environments
+        states = [env.game.state for env in self.envs]
+        legal_actions = [env.get_legal(state) for state, env in zip(states, self.envs)]
+        env_ids = list(range(self.batch_size))
+        
+        # Batched forward pass for initial states
+        probs_batch, values_batch = self.agent.forward_batch(states, env_ids)
+        
+        # Process each timestep with all environments in parallel
+        for step_idx in range(self.steps_per_epoch):
+            next_states = []
+            rewards = []
+            dones = []
+            actions_taken = []  # Track actions for visualization
             
-            state = env.game.state
-            legal = env.get_legal(state)
-            probs, value = self.agent.forward(state)
-            
-            for step_idx in range(self.steps_per_epoch):
+            # Execute actions in all environments
+            for env_idx, (env, probs, value, legal) in enumerate(
+                zip(self.envs, probs_batch, values_batch, legal_actions)
+            ):
                 action, action_idx = self.agent.getAction(legal, probs)
+                actions_taken.append((action, action_idx))
                 
+                # Record data
                 prob_entropy = -(probs * torch.log(probs + 1e-10)).sum()
-                all_entropies.append(prob_entropy)
+                env_data[env_idx]['entropies'].append(prob_entropy)
+                env_data[env_idx]['log_probs'].append(torch.log(probs[action_idx] + 1e-10))
                 
-                log_prob = torch.log(probs[action_idx] + 1e-10)
-                all_log_probs.append(log_prob)
-                
-                # Execute next state
+                # Execute action
                 next_state, reward, done = env.step(action)
-                next_probs, next_value = self.agent.forward(next_state)
                 
-                episode_steps += 1
+                env_data[env_idx]['episode_steps'] += 1
                 
                 if done:
-                    td_error = reward - value
-                    td_target = None
-                    # Reset environment for next iteration
-                    self.total_steps += episode_steps
-                    episode_steps = 0
+                    self.total_steps += env_data[env_idx]['episode_steps']
+                    env_data[env_idx]['episode_steps'] = 0
                     env.reset()
                     next_state = env.game.state
+                
+                next_states.append(next_state)
+                rewards.append(reward)
+                dones.append(done)
+            
+            # Batched forward pass for next states
+            next_probs_batch, next_values_batch = self.agent.forward_batch(next_states, env_ids)
+            
+            # Calculate TD errors for all environments
+            for env_idx, (value, next_value, reward, done) in enumerate(
+                zip(values_batch, next_values_batch, rewards, dones)
+            ):
+                if done:
+                    td_target = reward
                 else:
                     td_target = reward + self.gamma * next_value.detach()
-                    td_error = td_target - value
+                
+                td_error = td_target - value
+                env_data[env_idx]['td_errors'].append(td_error)
+                env_data[env_idx]['game_overs'].append(done)
                 
                 # Record visualization data
                 if self.save_visualization_data:
+                    action, action_idx = actions_taken[env_idx]
                     step_data = {
-                        'state': state,
-                        'legal_actions': legal,
-                        'action_probs': probs,
+                        'state': states[env_idx],
+                        'legal_actions': legal_actions[env_idx],
+                        'action_probs': probs_batch[env_idx],
                         'selected_action': action,
                         'selected_action_idx': action_idx,
                         'value': value,
@@ -224,19 +257,28 @@ class PolicyGradientTrainer(BaseTrainer):
                         'done': done
                     }
                     self.on_visualization_step(env_idx, step_data)
-                
-                prev_states['td_error'].append(td_error)
-                prev_states['game_over'].append(done)
-                
-                state = next_state
-                legal = env.get_legal(state)
-                probs, value = next_probs, next_value
             
-            # Calculate GAE
+            # Update for next iteration
+            states = next_states
+            legal_actions = [env.get_legal(state) for state, env in zip(states, self.envs)]
+            probs_batch = next_probs_batch
+            values_batch = next_values_batch
+        
+        # Calculate GAE for each environment and aggregate
+        all_log_probs = []
+        all_advantages = []
+        all_entropies = []
+        all_td_errors = []
+        
+        for env_idx in range(self.batch_size):
+            # GAE calculation (unchanged)
             advantages = []
             gae = 0
             
-            for done, td_error in zip(reversed(prev_states['game_over']), reversed(prev_states['td_error'])):
+            for done, td_error in zip(
+                reversed(env_data[env_idx]['game_overs']),
+                reversed(env_data[env_idx]['td_errors'])
+            ):
                 if done:
                     advantage = td_error
                 else:
@@ -252,22 +294,21 @@ class PolicyGradientTrainer(BaseTrainer):
             if self.save_visualization_data:
                 self.on_visualization_advantages(env_idx, advantages)
             
-            all_td_errors.extend(prev_states['td_error'])
+            # Aggregate
+            all_log_probs.extend(env_data[env_idx]['log_probs'])
             all_advantages.extend(advantages)
+            all_entropies.extend(env_data[env_idx]['entropies'])
+            all_td_errors.extend(env_data[env_idx]['td_errors'])
         
         all_log_probs = torch.stack(all_log_probs)
         all_advantages = torch.stack(all_advantages)
         all_entropies = torch.stack(all_entropies)
         all_td_errors = torch.stack(all_td_errors)
         
-        # Critic loss: MSE on normalized TD errors (range ~[0, 4])
-        # td_mean = all_td_errors.mean().detach()
-        # td_std = all_td_errors.std().detach() + 1e-8
-        # all_td_errors = (all_td_errors - td_mean) / td_std
+        # Critic loss: MSE on TD errors
         critic_loss = (all_td_errors ** 2)
 
         # Actor loss
-        #all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
         actor_loss = -(all_log_probs * all_advantages.detach())
 
         total_loss = 1.0 * actor_loss + 0.5 * critic_loss - 0.01 * all_entropies
@@ -375,7 +416,7 @@ class PolicyGradientTrainer(BaseTrainer):
 
 def main():
     parser = argparse.ArgumentParser(description='Policy Gradient (Actor-Critic) Pacman Training')
-    parser.add_argument('--num-epochs', type=int, default=500, help='Number of training epochs')
+    parser.add_argument('--num-epochs', type=int, default=200, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
     parser.add_argument('--steps-per-epoch', type=int, default=20, help='Steps per environment per epoch')
     parser.add_argument('--layout', type=str, default='mediumClassic', help='Layout name')
@@ -387,7 +428,7 @@ def main():
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
-    parser.add_argument('--resume', type=str, default='runs\policy_gradient\\20260209_224327',
+    parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
                        help='Load best checkpoint instead of last', default=False)

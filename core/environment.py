@@ -30,7 +30,7 @@ REWARD_SCALE = 1000.0     # Maximum absolute reward value
 class PacmanEnv:
     """Lightweight Pacman environment for RL training."""
     
-    def __init__(self, agent, layout_name='mediumClassic', add_extra_ghost=False, display=None, allow_stop=True):
+    def __init__(self, agent, layout_name='mediumClassic', add_extra_ghost=False, display=None, allow_stop=True, env_id=0):
         self.agent = agent
         self.layout_name = layout_name
         self.display = display or textDisplay.NullGraphics()
@@ -38,6 +38,7 @@ class PacmanEnv:
         self.wins = 0
         self.allow_stop = allow_stop
         self.add_extra_ghost = add_extra_ghost
+        self.env_id = env_id
         self.reset()
     
     def reset(self):
@@ -46,7 +47,7 @@ class PacmanEnv:
         ghosts = [ghostAgents.RandomGhost(i+1) for i in range(4)]
         rules = ClassicGameRules()
         self.game = rules.newGame(lay, self.agent, ghosts, self.display, quiet=True, catchExceptions=False)
-        self.agent.registerInitialState(self.game.state)
+        self.agent.registerInitialState(self.game.state, self.env_id)
         
         # Initialize display for graphics
         self.display.initialize(self.game.state.data)

@@ -27,11 +27,11 @@ class RLAgent(Agent):
         self.model = model
         self.actions = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST, Directions.STOP]
         self.memory_context = memory_context
-        self.position_buffer = deque(maxlen=memory_context)
+        self.position_buffers = {}  # env_id -> deque for batched processing
+
     
-    def state_to_tensor(self, state):
-        """
-        Convert game state to 6-channel tensor.
+    def state_to_tensor(self, state, env_id=0):
+        """Convert game state to 6-channel tensor.
         
         Channels:
         0: Pacman position
@@ -41,8 +41,12 @@ class RLAgent(Agent):
         4: Food (regular pellets only)
         5: Capsules (power pellets)
         
+        Args:
+            state: Game state
+            env_id: Environment ID for retrieving correct position buffer
+        
         Returns:
-            torch.Tensor: Shape (1, 6, height, width)
+            torch.Tensor: Shape (1, 6+memory_context, height, width)
         """
         # Get grid dimensions
         walls = state.getWalls()
@@ -77,14 +81,19 @@ class RLAgent(Agent):
         for cx, cy in capsules:
             channels[5, int(cy), int(cx)] = 1.0
         
-        # Append position history channels
-        for pos_channel in self.position_buffer:
+        # Append position history channels from environment-specific buffer
+        for pos_channel in self.position_buffers[env_id]:
             channels = np.concatenate([channels, pos_channel], axis=0)
         
         return torch.from_numpy(channels).unsqueeze(0)
     
-    def registerInitialState(self, state):
-        """Initialize position buffer with initial Pacman position."""
+    def registerInitialState(self, state, env_id=0):
+        """Initialize position buffer with initial Pacman position.
+        
+        Args:
+            state: Initial game state
+            env_id: Environment ID for buffer tracking
+        """
         walls = state.getWalls()
         width, height = walls.width, walls.height
         x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
@@ -92,17 +101,23 @@ class RLAgent(Agent):
         initial_pos = np.zeros((1, height, width), dtype=np.float32)
         initial_pos[0, y, x] = 1.0
         
-        self.position_buffer = deque([initial_pos] * self.memory_context, maxlen=self.memory_context)
+        # Fill all buffer slots with initial position
+        self.position_buffers[env_id] = deque([initial_pos] * self.memory_context, maxlen=self.memory_context)
     
-    def update_position_buffer(self, state):
-        """Add current Pacman position to buffer."""
+    def update_position_buffer(self, state, env_id=0):
+        """Add current Pacman position to buffer.
+        
+        Args:
+            state: Current game state
+            env_id: Environment ID for buffer tracking
+        """
         walls = state.getWalls()
         width, height = walls.width, walls.height
         x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
         
         pos_channel = np.zeros((1, height, width), dtype=np.float32)
         pos_channel[0, y, x] = 1.0
-        self.position_buffer.append(pos_channel)
+        self.position_buffers[env_id].append(pos_channel)
     
     def getAction(self, legal_actions, action_probs):
 
@@ -113,12 +128,48 @@ class RLAgent(Agent):
 
         return self.actions[action_idx], action_idx
 
-    def forward(self, state):
+    def forward(self, state, env_id=0):
+        """Forward pass for a single state.
         
-        self.update_position_buffer(state)
-        state_tensor = self.state_to_tensor(state)
+        Args:
+            state: Game state
+            env_id: Environment ID for buffer tracking
+            
+        Returns:
+            probs: Action probabilities (5,)
+            value: State value estimate (scalar)
+        """
+        state_tensor = self.state_to_tensor(state, env_id)
         probs, value = self.model(state_tensor, return_both=True)
         probs = probs.squeeze()
         value = value.squeeze()
 
+        self.update_position_buffer(state, env_id)
+
         return probs, value
+    
+    def forward_batch(self, states, env_ids):
+        """Batched forward pass for multiple states.
+        
+        Args:
+            states: List of game states
+            env_ids: List of environment IDs corresponding to states
+            
+        Returns:
+            probs_batch: Action probabilities (batch_size, 5)
+            values_batch: State value estimates (batch_size,)
+        """
+        
+        # Convert all states to tensors and stack into batch
+        state_tensors = [self.state_to_tensor(state, env_id) for state, env_id in zip(states, env_ids)]
+        batch_tensor = torch.cat(state_tensors, dim=0)  # (batch_size, channels, H, W)
+        
+        # Single batched forward pass
+        probs_batch, values_batch = self.model(batch_tensor, return_both=True)
+        values_batch = values_batch.squeeze(-1)  # (batch_size,)
+
+        # Update position buffers for all states
+        for state, env_id in zip(states, env_ids):
+            self.update_position_buffer(state, env_id)
+        
+        return probs_batch, values_batch

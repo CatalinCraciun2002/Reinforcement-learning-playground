@@ -62,12 +62,12 @@ class ActorCriticNetwork(nn.Module):
         # Actor head
         self.actor_fc1 = nn.Linear(self.fc_shared_output_size, 128)
         self.actor_fc2 = nn.Linear(128, 5)  # 5 actions: North, South, East, West, Stop
-        self.actor_dropout = nn.Dropout(0.3)
+        self.actor_dropout = nn.Dropout(0.5)
         
         # Critic head
         self.critic_fc1 = nn.Linear(self.fc_shared_output_size, 128)
         self.critic_fc2 = nn.Linear(128, 1)
-        self.critic_dropout = nn.Dropout(0.3)
+        self.critic_dropout = nn.Dropout(0.5)
         
     def forward_backbone(self, x):
         """Shared feature extraction."""
@@ -83,8 +83,10 @@ class ActorCriticNetwork(nn.Module):
         if self.fc_shared is None or self.fc_shared_input_size != out.size(1):
             self.fc_shared_input_size = out.size(1)
             self.fc_shared = nn.Linear(out.size(1), self.fc_shared_output_size).to(out.device)
+            self.fc_shared_dropout = nn.Dropout(0.5)
+
         
-        return F.relu(self.fc_shared(out))
+        return F.relu(self.fc_shared_dropout(self.fc_shared(out)))
     
     def forward_actor(self, shared_features):
         """Policy head: action probabilities."""
