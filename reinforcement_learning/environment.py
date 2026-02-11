@@ -50,6 +50,16 @@ class PacmanEnv:
         # Win bonus
         if done and self.game.state.isWin():
             reward += 500
+            
+        # Proximity Penalty to encourage faster reaction
+        if not done:
+            ghost_pos = self.game.state.getGhostPositions()
+            if ghost_pos:
+                pacman_pos = self.game.state.getPacmanPosition()
+                min_dist = min([abs(pacman_pos[0]-g[0]) + abs(pacman_pos[1]-g[1]) for g in ghost_pos])
+                if min_dist <= 1: reward -= 50
+                elif min_dist <= 2: reward -= 20
+                elif min_dist <= 3: reward -= 10
         
         return self.game.state.deepCopy(), reward, done
     

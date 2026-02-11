@@ -113,6 +113,16 @@ def run_dqn_training(args):
                 reward += 100 # Win Bonus
                 total_wins += 1
             
+            # Proximity Penalty to encourage faster reaction
+            if not done:
+                ghost_pos = game.state.getGhostPositions()
+                if ghost_pos:
+                    pacman_pos = game.state.getPacmanPosition()
+                    min_dist = min([abs(pacman_pos[0]-g[0]) + abs(pacman_pos[1]-g[1]) for g in ghost_pos])
+                    if min_dist <= 1: reward -= 5.0 # Adjusted scale for DQN
+                    elif min_dist <= 2: reward -= 2.0
+                    elif min_dist <= 3: reward -= 1.0
+            
             if action != Directions.STOP:
                 reward += 0.1
                 

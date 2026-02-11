@@ -87,6 +87,7 @@ class InfoPane:
         self.height = INFO_PANE_HEIGHT
         self.fontSize = 24
         self.textColor = PACMAN_COLOR
+        self.speedFontSize = 14
         self.drawPane()
 
     def toScreen(self, pos, y = None):
@@ -104,6 +105,15 @@ class InfoPane:
 
     def drawPane(self):
         self.scoreText = text( self.toScreen(0, 0  ), self.textColor, "SCORE:    0", "Times", self.fontSize, "bold")
+        # Speed labels next to score (shifted further right)
+        self.pacmanSpeedText = text( self.toScreen(250, 0), PACMAN_COLOR, "P: 0.0", "Times", self.speedFontSize, "bold")
+        self.ghost1SpeedText = text( self.toScreen(310, 0), GHOST_COLORS[0], "G1: 0.0", "Times", self.speedFontSize, "bold")
+        self.ghost2SpeedText = text( self.toScreen(375, 0), GHOST_COLORS[1], "G2: 0.0", "Times", self.speedFontSize, "bold")
+
+    def updateSpeeds(self, pacSpeed, g1Speed, g2Speed):
+        changeText(self.pacmanSpeedText, "P: %0.1f" % pacSpeed)
+        if g1Speed is not None: changeText(self.ghost1SpeedText, "G1: %0.1f" % g1Speed)
+        if g2Speed is not None: changeText(self.ghost2SpeedText, "G2: %0.1f" % g2Speed)
 
     def initializeGhostDistances(self, distances):
         self.ghostDistanceText = []
@@ -173,6 +183,10 @@ class PacmanGraphics:
         self.distributionImages = None  # Initialized lazily
         self.drawStaticObjects(state)
         self.drawAgentObjects(state)
+        
+        # Speed tracking
+        self.lastMoveTimes = [time.time()] * len(state.agentStates)
+        self.agentSpeeds = [0.0] * len(state.agentStates)
 
         # Information
         self.previousState = state
@@ -250,6 +264,29 @@ class PacmanGraphics:
         if newState._capsuleEaten != None:
             self.removeCapsule(newState._capsuleEaten, self.capsules)
         self.infoPane.updateScore(newState.score)
+        
+        # Update speeds based on displacement
+        now = time.time()
+        dt = now - self.lastMoveTimes[agentIndex]
+        if dt > 0:
+            # Calculate distance moved
+            prevPos = prevState.getPosition()
+            currPos = agentState.getPosition()
+            dist = 0.0
+            if prevPos and currPos:
+                dist = math.sqrt((currPos[0]-prevPos[0])**2 + (currPos[1]-prevPos[1])**2)
+            
+            instant_speed = dist / dt
+            # Simple moving average for smoother display
+            self.agentSpeeds[agentIndex] = 0.7 * self.agentSpeeds[agentIndex] + 0.3 * instant_speed
+        self.lastMoveTimes[agentIndex] = now
+        
+        # Pass to InfoPane (Pacman is index 0, Ghosts are 1, 2, ...)
+        pacSpeed = self.agentSpeeds[0]
+        g1Speed = self.agentSpeeds[1] if len(self.agentSpeeds) > 1 else None
+        g2Speed = self.agentSpeeds[2] if len(self.agentSpeeds) > 2 else None
+        self.infoPane.updateSpeeds(pacSpeed, g1Speed, g2Speed)
+
         if 'ghostDistances' in dir(newState):
             self.infoPane.updateGhostDistances(newState.ghostDistances)
 

@@ -4,24 +4,30 @@ Uses linear feature approximation.
 """
 
 import random, time
-import core.util as util
 import sys
 import os
 import math
 
 # Add parent directory to path to import game module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import core.util as util
 from core.game import Agent, Directions, Actions
+from reinforcement_learning.distance_utils import closestTarget
 
 class SimpleExtractor:
     """
     Returns features for Pacman:
-    - bias: 1.0
-    - active-ghosts: # of dangerous ghosts 1 step away
+    - active-ghosts-1-step: # of dangerous ghosts 1 step away
+    - active-ghosts-2-step: # of dangerous ghosts 2 steps away
+    - active-ghosts-3-step: # of dangerous ghosts 3 steps away
+    - closest-active-ghost: distance to closest active ghost (reciprocal)
+    - scared-ghosts-1-step: # of scared ghosts 1 step away
+    - scared-ghosts-2-step: # of scared ghosts 2 steps away
+    - scared-ghosts-3-step: # of scared ghosts 3 steps away
+    - closest-scared-ghost: distance to closest scared ghost (reciprocal)
     - eats-food: 1.0 if pacman eats food
     - closest-food: distance to closest food
-    - scared-ghosts: # of scared ghosts 1 step away
-    - closest-scared-ghost: distance to closest scared ghost
     """
     def getFeatures(self, state, action):
         features = util.Counter()
@@ -41,22 +47,42 @@ class SimpleExtractor:
             else:
                 active_ghosts.append(ghost.getPosition())
         
-        # Count dangerous ghosts 1-step away
+        # Count dangerous ghosts at various distances
+        def get_dist(p1, p2):
+            return abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
+
         features['#-of-active-ghosts-1-step-away'] = sum(
-            (next_x, next_y) in Actions.getLegalNeighbors(g, state.getWalls()) 
-            for g in active_ghosts
+            get_dist((next_x, next_y), g) <= 1 for g in active_ghosts
+        )
+        features['#-of-active-ghosts-2-step-away'] = sum(
+            get_dist((next_x, next_y), g) <= 2 for g in active_ghosts
+        )
+        features['#-of-active-ghosts-3-step-away'] = sum(
+            get_dist((next_x, next_y), g) <= 3 for g in active_ghosts
         )
 
-        # Count scared ghosts 1-step away (opportunistic eating)
+        # Distance to closest active ghost
+        if active_ghosts:
+            active_dist = closestTarget((next_x, next_y), active_ghosts, state.getWalls(), is_grid=False)
+            if active_dist is not None:
+                # Use reciprocal for better linear weight scaling
+                features['closest-active-ghost'] = 1.0 / (active_dist + 1)
+
+        # Count scared ghosts at various distances
         features['#-of-scared-ghosts-1-step-away'] = sum(
-            (next_x, next_y) in Actions.getLegalNeighbors(g, state.getWalls()) 
-            for g in scared_ghosts
+            get_dist((next_x, next_y), g) <= 1 for g in scared_ghosts
+        )
+        features['#-of-scared-ghosts-2-step-away'] = sum(
+            get_dist((next_x, next_y), g) <= 2 for g in scared_ghosts
+        )
+        features['#-of-scared-ghosts-3-step-away'] = sum(
+            get_dist((next_x, next_y), g) <= 3 for g in scared_ghosts
         )
 
         # if there is no danger of ghosts then add the food feature
         if not features['#-of-active-ghosts-1-step-away']:
             if state.getFood()[next_x][next_y]:
-                features['eats-food'] = 1.0
+                features['eats-food'] = 1
             
         # Food distance
         food_dist = closestTarget((next_x, next_y), state.getFood(), state.getWalls())
@@ -67,33 +93,12 @@ class SimpleExtractor:
         if scared_ghosts:
             scared_dist = closestTarget((next_x, next_y), scared_ghosts, state.getWalls(), is_grid=False)
             if scared_dist is not None:
-                features['closest-scared-ghost'] = float(scared_dist) / (state.getWalls().width * state.getWalls().height)
+                # Use reciprocal for better linear weight scaling
+                features['closest-scared-ghost'] = 1.0 / (scared_dist + 1)
             
         return features
 
-def closestTarget(pos, target, walls, is_grid=True):
-    """
-    BFS to find distance to closest target (can be a Grid/matrix or a list of positions).
-    """
-    fringe = [(pos[0], pos[1], 0)]
-    expanded = set()
-    while fringe:
-        pos_x, pos_y, dist = fringe.pop(0)
-        if (pos_x, pos_y) in expanded:
-            continue
-        expanded.add((pos_x, pos_y))
-        
-        # Check if we hit a target
-        if is_grid:
-            if target[pos_x][pos_y]: return dist
-        else:
-            if (pos_x, pos_y) in target: return dist
-            
-        # Spread out
-        nbrs = Actions.getLegalNeighbors((pos_x, pos_y), walls)
-        for nbr_x, nbr_y in nbrs:
-            fringe.append((nbr_x, nbr_y, dist+1))
-    return None
+
 
 class ApproximateQAgent(Agent):
     """

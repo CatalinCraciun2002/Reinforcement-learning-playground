@@ -22,6 +22,8 @@ import display.textDisplay as textDisplay
 import display.graphicsDisplay as graphicsDisplay
 import agents.ghostAgents as ghostAgents
 from core.game import Directions
+from reinforcement_learning.distance_utils import get_path_to_food, get_paths_to_all_scared_ghosts, get_paths_to_all_active_ghosts, get_path_to_capsules
+from reinforcement_learning.plot_utils import InGameTrajectoryVisualizer
 
 def run_qlearning_training(args):
     print(f"Initializing Q-Learning Training (Layout: {args.layout})...")
@@ -48,6 +50,7 @@ def run_qlearning_training(args):
     wins = 0
     
     pbar = tqdm(range(args.episodes), desc="Training")
+    visualizer = None
     
     for episode in pbar:
         # Check if we should render this episode
@@ -61,7 +64,12 @@ def run_qlearning_training(args):
         game = rules.newGame(layout, agent, ghosts, display, quiet=True, catchExceptions=False)
         game.display.initialize(game.state.data)
         
-        # Run the game loop manually to allow for agent updates
+        # Initialize GameVisualizer with screen dimensions
+        if render:
+            if visualizer is None:
+                visualizer = InGameTrajectoryVisualizer(game.display)
+            else:
+                visualizer.reset()
         # But ClassicGameRules.run() calls agent.getAction which calls update implicitly?
         # No, standard Pacman agents don't update in getAction usually.
         # But our ApproximateQAgent needs (state, action, nextState, reward) to update.
@@ -69,6 +77,8 @@ def run_qlearning_training(args):
         # unless we hook into it or run it step-by-step.
         
         # Let's run step-by-step
+        step_count = 0
+        episode_start_time = time.time()
         while not game.gameOver:
             for i, agent_obj in enumerate(game.agents):
                 if game.gameOver: break
@@ -84,21 +94,63 @@ def run_qlearning_training(args):
                 
                 # 3. If it was Pacman's turn, update the learning agent
                 if i == 0:
+                    step_count += 1
                     next_state = game.state
                     reward = next_state.getScore() - state.getScore()
+                    
+                    # Step penalty to encourage speed and discourage idling
+                    reward -= 1
+                    
+                    # Time penalty based on wall-clock time
+                    current_time = time.time()
+                    elapsed_time = current_time - episode_start_time
+                    # Penalize more for longer execution (e.g., -10 points per second)
+                    reward -= (elapsed_time * 0.1) 
                     
                     # Win/Lose bonus
                     if game.gameOver:
                         if game.state.isWin():
-                            reward += 500
+                            # Large gain if finished fast - increased for more aggressive speed incentive
+                            speed_bonus = max(0, 2000 - step_count * 5)
+                            
+                            # Additional real-time bonus
+                            time_bonus = max(0, 1000 - elapsed_time * 20)
+                            reward += 500 + speed_bonus + time_bonus
                             wins += 1
                         elif game.state.isLose():
                             reward -= 500
                     
+                    # Proximity Penalty to encourage faster reaction
+                    # ONLY apply to active ghosts
+                    active_ghost_pos = [g.getPosition() for g in next_state.getGhostStates() if g.scaredTimer == 0]
+                    if active_ghost_pos:
+                        min_dist = min([abs(next_state.getPacmanPosition()[0]-g[0]) + abs(next_state.getPacmanPosition()[1]-g[1]) for g in active_ghost_pos])
+                        if min_dist <= 1: reward -= 50
+                        elif min_dist <= 2: reward -= 20
+                        elif min_dist <= 3: reward -= 10
+                        
+                    # Proximity Bonus for scared ghosts to encourage chasing
+                    scared_ghost_pos = [g.getPosition() for g in next_state.getGhostStates() if g.scaredTimer > 0]
+                    if scared_ghost_pos:
+                        min_scared_dist = min([abs(next_state.getPacmanPosition()[0]-g[0]) + abs(next_state.getPacmanPosition()[1]-g[1]) for g in scared_ghost_pos])
+                        if min_scared_dist <= 1: reward += 30
+                        elif min_scared_dist <= 2: reward += 15
+                        elif min_scared_dist <= 3: reward += 10
+                    
+                    # Eat Ghost Bonus
+                    if next_state.getScore() - state.getScore() > 100:
+                        reward += 200 # Significant bonus for eating a ghost
+                    
                     # Update Agent
-                    if action != Directions.STOP:
-                        reward += 0
                     agent.update(state, action, next_state, reward)
+                    
+                    # Update Visualization if rendering
+                    if render and visualizer:
+                        g_paths = get_paths_to_all_active_ghosts(next_state)
+                        f_path = get_path_to_food(next_state)
+                        s_paths = get_paths_to_all_scared_ghosts(next_state)
+                        c_path = get_path_to_capsules(next_state)
+                        visualizer.update(g_paths, c_path, f_path, s_paths, next_state)
         
         # End of episode
         # agent.final(game.state) # Optional, usually for decay
