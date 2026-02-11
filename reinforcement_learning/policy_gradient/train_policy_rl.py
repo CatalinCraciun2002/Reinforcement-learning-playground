@@ -196,6 +196,7 @@ class PolicyGradientTrainer(BaseTrainer):
             rewards = []
             dones = []
             actions_taken = []  # Track actions for visualization
+            action_indices = []  # Track action indices for vectorized calculations
             
             # Execute actions in all environments
             for env_idx, (env, probs, value, legal) in enumerate(
@@ -203,11 +204,7 @@ class PolicyGradientTrainer(BaseTrainer):
             ):
                 action, action_idx = self.agent.getAction(legal, probs)
                 actions_taken.append((action, action_idx))
-                
-                # Record data
-                prob_entropy = -(probs * torch.log(probs + 1e-10)).sum()
-                env_data[env_idx]['entropies'].append(prob_entropy)
-                env_data[env_idx]['log_probs'].append(torch.log(probs[action_idx] + 1e-10))
+                action_indices.append(action_idx)
                 
                 # Execute action
                 next_state, reward, done = env.step(action)
@@ -224,21 +221,29 @@ class PolicyGradientTrainer(BaseTrainer):
                 rewards.append(reward)
                 dones.append(done)
             
+            # Vectorized entropy and log prob calculations
+            batch_entropies = -(probs_batch * torch.log(probs_batch + 1e-10)).sum(dim=1)  # (batch_size,)
+            action_indices_tensor = torch.tensor(action_indices, dtype=torch.long)
+            batch_log_probs = torch.log(probs_batch[torch.arange(self.batch_size), action_indices_tensor] + 1e-10)
+            
+            # Store entropy and log probs
+            for env_idx in range(self.batch_size):
+                env_data[env_idx]['entropies'].append(batch_entropies[env_idx])
+                env_data[env_idx]['log_probs'].append(batch_log_probs[env_idx])
+            
             # Batched forward pass for next states
             next_probs_batch, next_values_batch = self.agent.forward_batch(next_states, env_ids)
             
-            # Calculate TD errors for all environments
-            for env_idx, (value, next_value, reward, done) in enumerate(
-                zip(values_batch, next_values_batch, rewards, dones)
-            ):
-                if done:
-                    td_target = reward
-                else:
-                    td_target = reward + self.gamma * next_value.detach()
-                
-                td_error = td_target - value
-                env_data[env_idx]['td_errors'].append(td_error)
-                env_data[env_idx]['game_overs'].append(done)
+            # Vectorized TD error calculation
+            rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+            dones_tensor = torch.tensor(dones, dtype=torch.float32)
+            td_targets = rewards_tensor + self.gamma * next_values_batch.detach() * (1 - dones_tensor)
+            td_errors = td_targets - values_batch
+            
+            # Store TD errors and record visualization data
+            for env_idx in range(self.batch_size):
+                env_data[env_idx]['td_errors'].append(td_errors[env_idx])
+                env_data[env_idx]['game_overs'].append(dones[env_idx])
                 
                 # Record visualization data
                 if self.save_visualization_data:
@@ -249,12 +254,12 @@ class PolicyGradientTrainer(BaseTrainer):
                         'action_probs': probs_batch[env_idx],
                         'selected_action': action,
                         'selected_action_idx': action_idx,
-                        'value': value,
-                        'reward': reward,
-                        'next_value': next_value,
-                        'td_error': td_error,
-                        'td_target': td_target,
-                        'done': done
+                        'value': values_batch[env_idx],
+                        'reward': rewards[env_idx],
+                        'next_value': next_values_batch[env_idx],
+                        'td_error': td_errors[env_idx],
+                        'td_target': td_targets[env_idx],
+                        'done': dones[env_idx]
                     }
                     self.on_visualization_step(env_idx, step_data)
             
@@ -369,8 +374,8 @@ class PolicyGradientTrainer(BaseTrainer):
         }
     
     def get_metric_for_checkpoint(self, val_metrics):
-        """Use validation win rate as the metric for checkpointing."""
-        return val_metrics['Score/won'], 'win_rate'
+        """Use validation average score as the metric for checkpointing."""
+        return val_metrics['Score/score'], 'avg_score'
     
     def get_progress_bar_dict(self, train_metrics, val_metrics):
         """Customize progress bar display."""
@@ -410,7 +415,7 @@ class PolicyGradientTrainer(BaseTrainer):
         return {
             'wins': self.wins,
             'total_steps': self.total_steps,
-            'val_win_rate': self.best_metric
+            'val_avg_score': self.best_metric
         }
 
 
@@ -424,7 +429,7 @@ def main():
     parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
-    parser.add_argument('--show-epochs', type=int, default=10, 
+    parser.add_argument('--show-epochs', type=int, default=1, 
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
@@ -434,9 +439,51 @@ def main():
                        help='Load best checkpoint instead of last', default=False)
     parser.add_argument('--save-visualization-data', action='store_true',
                        help='Save training data for visualization', default=False)
+    parser.add_argument('--validate-only', action='store_true',
+                       help='Only run a validation game without training', default=False)
     
     args = parser.parse_args()
     
+    # Validation-only mode: load checkpoint and run a single validation game
+    if args.validate_only:
+        if not args.resume:
+            print("Error: --validate-only requires --resume to specify a checkpoint")
+            return
+        
+        print(f"Running validation game from checkpoint: {args.resume}")
+        
+        # Determine checkpoint path
+        checkpoint_name = 'model_best.pth' if args.use_best else 'model_last.pth'
+        checkpoint_path = os.path.join(args.resume, checkpoint_name)
+        
+        if not os.path.exists(checkpoint_path):
+            print(f"Error: Checkpoint not found: {checkpoint_path}")
+            return
+        
+        # Load checkpoint directly without creating trainer
+        print(f"Loading checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path)
+        
+        # Create model and load weights
+        model = ActorCriticNetwork(memory_context=args.memory_context)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        
+        # Create agent
+        agent = RLAgent(model, memory_context=args.memory_context)
+        
+        # Run a single validation game with graphics
+        print("Starting validation game with graphics...")
+        score, won, steps = run_validation_game(agent, args.layout, with_graphics=True)
+        
+        print(f"\nValidation Result:")
+        print(f"  Score: {score}")
+        print(f"  Result: {'WON!' if won else 'Lost'}")
+        print(f"  Steps: {steps}")
+        
+        return
+    
+    # Normal training mode
     trainer = PolicyGradientTrainer(
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,

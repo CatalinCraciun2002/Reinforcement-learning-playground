@@ -56,6 +56,7 @@ class PacmanEnv:
         if self.add_extra_ghost:
             self.add_to_layout_ghost()
         
+        return self.game.state # Return the initial state
     
     def step(self, action):
         """Execute action and return (next_state, reward, done)."""

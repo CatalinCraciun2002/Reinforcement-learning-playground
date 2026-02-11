@@ -1,4 +1,4 @@
-"""
+U"""
 Knowledge Distillation Trainer: Q-Learning to Policy Gradient
 
 Trains a Policy Gradient neural network (student) by distilling knowledge
@@ -122,8 +122,11 @@ class DistillationTrainer(BaseTrainer):
         # Create student agent
         self.student_agent = RLAgent(self.model, memory_context=self.memory_context)
         
-        # Create environments
-        self.envs = [PacmanEnv(self.student_agent, self.layout_name) for _ in range(self.batch_size)]
+        # Create environments with proper env_id tracking
+        self.envs = [
+            PacmanEnv(self.student_agent, self.layout_name, env_id=i) 
+            for i in range(self.batch_size)
+        ]
         print(f"✓ Created {self.batch_size} parallel environments")
     
     def _load_teacher(self):
@@ -217,10 +220,8 @@ class DistillationTrainer(BaseTrainer):
         
         # Reset environments and initialize agents
         states = []
-        for env in self.envs:
+        for env_idx, env in enumerate(self.envs):
             state = env.reset()
-            # Initialize student agent's position buffer for this game
-            self.student_agent.registerInitialState(state)
             states.append(state)
         
         # Collect data and train
@@ -232,7 +233,7 @@ class DistillationTrainer(BaseTrainer):
             
             for env_idx, (env, state) in enumerate(zip(self.envs, states)):
                 # Get current state tensor
-                state_tensor = self.student_agent.state_to_tensor(state)
+                state_tensor = self.student_agent.state_to_tensor(state, env_id=env_idx)
                 student_states_batch.append(state_tensor)
                 
                 # Get teacher probabilities
@@ -280,7 +281,7 @@ class DistillationTrainer(BaseTrainer):
             new_states = []
             for env_idx, (env, state) in enumerate(zip(self.envs, states)):
                 # Get action probabilities from student
-                probs, _ = self.student_agent.forward(state)
+                probs, _ = self.student_agent.forward(state, env_id=env_idx)
                 legal_actions = state.getLegalPacmanActions()
                 action, _ = self.student_agent.getAction(legal_actions, probs)
                 
@@ -288,8 +289,6 @@ class DistillationTrainer(BaseTrainer):
                 
                 if done:
                     next_state = env.reset()
-                    # Reinitialize agent's position buffer
-                    self.student_agent.registerInitialState(next_state)
                 
                 new_states.append(next_state)
             
@@ -322,13 +321,14 @@ class DistillationTrainer(BaseTrainer):
         
         with torch.no_grad():
             for _ in range(validation_games):
-                env = PacmanEnv(self.student_agent, self.layout_name)
+                # Create validation environment with unique env_id
+                val_env_id = self.batch_size + _  # Use IDs beyond training envs
+                env = PacmanEnv(self.student_agent, self.layout_name, env_id=val_env_id)
                 state = env.reset()
-                self.student_agent.registerInitialState(state)
                 done = False
                 
                 while not done:
-                    probs, _ = self.student_agent.forward(state)
+                    probs, _ = self.student_agent.forward(state, env_id=val_env_id)
                     legal_actions = state.getLegalPacmanActions()
                     action, _ = self.student_agent.getAction(legal_actions, probs)
                     state, reward, done, info = env.step(action)
@@ -367,7 +367,7 @@ class DistillationTrainer(BaseTrainer):
 
 def main():
     parser = argparse.ArgumentParser(description='Q-Learning to Policy Gradient Knowledge Distillation')
-    parser.add_argument('--teacher-checkpoint', type=str, required=True,
+    parser.add_argument('--teacher-checkpoint', type=str, default='runs\qlearning\\20260211_125233',
                        help='Path to Q-learning teacher checkpoint')
     parser.add_argument('--num-epochs', type=int, default=100,
                        help='Number of training epochs')
@@ -387,7 +387,7 @@ def main():
                        help='Memory context size')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to student checkpoint to resume from')
-    parser.add_argument('--use-best', action='store_true',
+    parser.add_argument('--use-best', action='store_true', default=True,
                        help='Load best checkpoint instead of last')
     
     args = parser.parse_args()

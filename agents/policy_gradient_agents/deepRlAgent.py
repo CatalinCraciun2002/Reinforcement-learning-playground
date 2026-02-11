@@ -28,6 +28,7 @@ class RLAgent(Agent):
         self.actions = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST, Directions.STOP]
         self.memory_context = memory_context
         self.position_buffers = {}  # env_id -> deque for batched processing
+        self.wall_cache = {}  # env_id -> cached wall array (walls never change)
 
     
     def state_to_tensor(self, state, env_id=0):
@@ -64,17 +65,22 @@ class RLAgent(Agent):
             x, y = int(ghost.getPosition()[0]), int(ghost.getPosition()[1])
             channels[3 if ghost.scaredTimer > 0 else 1, y, x] = 1.0
         
-        # Channel 2: Walls (vectorized)
-        channels[2] = np.array([[walls[x][y] for y in range(height)] for x in range(width)], dtype=np.float32).T
+        # Channel 2: Walls (cached - walls never change)
+        if env_id not in self.wall_cache:
+            # Direct conversion from Grid.data (list of lists)
+            self.wall_cache[env_id] = np.array(walls.data, dtype=np.float32).T
+        channels[2] = self.wall_cache[env_id]
         
-        # Channel 4: Food (vectorized, excluding capsules)
+        # Channel 4: Food (optimized with Grid.data)
         food = state.getFood()
         capsules = state.getCapsules()
-        food_array = np.array([[food[x][y] for y in range(height)] for x in range(width)], dtype=np.float32).T
+        # Direct conversion from Grid.data - much faster than nested comprehension
+        food_array = np.array(food.data, dtype=np.float32).T
         
-        # Remove capsule positions from food channel
-        for cx, cy in capsules:
-            food_array[int(cy), int(cx)] = 0.0
+        # Vectorized capsule removal
+        if capsules:
+            for cx, cy in capsules:
+                food_array[int(cy), int(cx)] = 0.0
         channels[4] = food_array
         
         # Channel 5: Capsules (power pellets)

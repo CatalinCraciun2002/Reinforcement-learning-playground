@@ -15,7 +15,7 @@ import numpy as np
 
 from core import layout
 from core.pacman import ClassicGameRules
-from agents import ghostAgents, keyboardAgents
+from agents.base_agents import ghostAgents, keyboardAgents
 from display import graphicsDisplay
 from core.environment import (
     REWARD_FOOD, REWARD_CAPSULE, REWARD_GHOST, 
