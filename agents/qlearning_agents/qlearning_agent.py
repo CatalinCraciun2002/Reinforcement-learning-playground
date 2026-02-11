@@ -17,11 +17,14 @@ class SimpleExtractor:
     """
     Returns features for Pacman:
     - bias: 1.0
-    - active-ghosts: # of dangerous ghosts 1 step away
+    - ghost-{i}-distance: normalized distance to ghost i (1-5)
+    - ghost-{i}-scared: 1.0 if ghost i is scared, 0.0 otherwise
+    - #-of-active-ghosts-1-step-away: # of dangerous ghosts 1 step away
+    - #-of-scared-ghosts-1-step-away: # of scared ghosts 1 step away
     - eats-food: 1.0 if pacman eats food
     - closest-food: distance to closest food
-    - scared-ghosts: # of scared ghosts 1 step away
-    - closest-scared-ghost: distance to closest scared ghost
+    - closest-capsule: distance to closest power capsule
+    - #-of-capsules: number of remaining capsules
     """
     def getFeatures(self, state, action):
         features = util.Counter()
@@ -32,22 +35,38 @@ class SimpleExtractor:
         dx, dy = Actions.directionToVector(action)
         next_x, next_y = int(x + dx), int(y + dy)
         
-        # Distinguish between active and scared ghosts
+        # Get normalization factor
+        norm_factor = state.getWalls().width * state.getWalls().height
+        
+        # Ghost features (individual distances and scared status)
+        ghost_states = state.getGhostStates()
         active_ghosts = []
         scared_ghosts = []
-        for ghost in state.getGhostStates():
-            if ghost.scaredTimer > 0:
-                scared_ghosts.append(ghost.getPosition())
-            else:
-                active_ghosts.append(ghost.getPosition())
         
-        # Count dangerous ghosts 1-step away
+        for i, ghost in enumerate(ghost_states, start=1):
+            ghost_pos = ghost.getPosition()
+            ghost_dist = closestTarget((next_x, next_y), [ghost_pos], state.getWalls(), is_grid=False)
+            
+            if ghost_dist is not None:
+                features[f'ghost-{i}-distance'] = float(ghost_dist) / norm_factor
+            else:
+                features[f'ghost-{i}-distance'] = 1.0  # Max distance if unreachable
+            
+            features[f'ghost-{i}-scared'] = 1.0 if ghost.scaredTimer > 0 else 0.0
+            
+            # Collect for legacy features
+            if ghost.scaredTimer > 0:
+                scared_ghosts.append(ghost_pos)
+            else:
+                active_ghosts.append(ghost_pos)
+        
+        # Count dangerous ghosts 1-step away (legacy feature)
         features['#-of-active-ghosts-1-step-away'] = sum(
             (next_x, next_y) in Actions.getLegalNeighbors(g, state.getWalls()) 
             for g in active_ghosts
         )
 
-        # Count scared ghosts 1-step away (opportunistic eating)
+        # Count scared ghosts 1-step away (legacy feature)
         features['#-of-scared-ghosts-1-step-away'] = sum(
             (next_x, next_y) in Actions.getLegalNeighbors(g, state.getWalls()) 
             for g in scared_ghosts
@@ -57,17 +76,20 @@ class SimpleExtractor:
         if not features['#-of-active-ghosts-1-step-away']:
             if state.getFood()[next_x][next_y]:
                 features['eats-food'] = 1.0
-            
+        
         # Food distance
         food_dist = closestTarget((next_x, next_y), state.getFood(), state.getWalls())
         if food_dist is not None:
-            features['closest-food'] = float(food_dist) / (state.getWalls().width * state.getWalls().height)
+            features['closest-food'] = float(food_dist) / norm_factor
 
-        # Scared ghost distance
-        if scared_ghosts:
-            scared_dist = closestTarget((next_x, next_y), scared_ghosts, state.getWalls(), is_grid=False)
-            if scared_dist is not None:
-                features['closest-scared-ghost'] = float(scared_dist) / (state.getWalls().width * state.getWalls().height)
+        # Capsule features
+        capsules = state.getCapsules()
+        features['#-of-capsules'] = len(capsules)
+        
+        if capsules:
+            capsule_dist = closestTarget((next_x, next_y), capsules, state.getWalls(), is_grid=False)
+            if capsule_dist is not None:
+                features['closest-capsule'] = float(capsule_dist) / norm_factor
             
         return features
 

@@ -433,14 +433,14 @@ def main():
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
-    parser.add_argument('--resume', type=str, default=None,
+    parser.add_argument('--resume', type=str, default='runs/policy_gradient/20260211_132747',
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
                        help='Load best checkpoint instead of last', default=False)
     parser.add_argument('--save-visualization-data', action='store_true',
                        help='Save training data for visualization', default=False)
     parser.add_argument('--validate-only', action='store_true',
-                       help='Only run a validation game without training', default=False)
+                       help='Only run a validation game without training', default=True)
     
     args = parser.parse_args()
     
@@ -466,7 +466,10 @@ def main():
         
         # Create model and load weights
         model = ActorCriticNetwork(memory_context=args.memory_context)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load with strict=False to handle architecture changes
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
         model.eval()
         
         # Create agent

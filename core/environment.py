@@ -44,7 +44,7 @@ class PacmanEnv:
     def reset(self):
         """Reset environment and return initial state."""
         lay = layout.getLayout(self.layout_name)
-        ghosts = [ghostAgents.RandomGhost(i+1) for i in range(4)]
+        ghosts = [ghostAgents.DirectionalGhost(1, 0.8, 0.8)] + [ghostAgents.RandomGhost(i+1) for i in range(1, 4)]
         rules = ClassicGameRules()
         self.game = rules.newGame(lay, self.agent, ghosts, self.display, quiet=True, catchExceptions=False)
         self.agent.registerInitialState(self.game.state, self.env_id)

@@ -24,6 +24,7 @@ from agents.qlearning_agents.qlearning_agent import ApproximateQAgent
 from core.environment import PacmanEnv
 from agents.policy_gradient_agents.deepRlAgent import RLAgent
 import core.layout as layout_module
+from display import graphicsDisplay
 
 
 class DistillationTrainer(BaseTrainer):
@@ -46,6 +47,7 @@ class DistillationTrainer(BaseTrainer):
         beta=0.5,
         lr=1e-4,
         memory_context=5,
+        show_epochs=50,
         resume_from=None,
         use_best_checkpoint=False
     ):
@@ -62,6 +64,7 @@ class DistillationTrainer(BaseTrainer):
             beta: Weight for value loss (0 = only policy distillation)
             lr: Learning rate
             memory_context: Memory context for student model
+            show_epochs: Render validation game every N epochs (0 to disable)
             resume_from: Path to resume student checkpoint
             use_best_checkpoint: Load best checkpoint instead of last
         """
@@ -73,6 +76,7 @@ class DistillationTrainer(BaseTrainer):
         self.beta = beta
         self.lr = lr
         self.memory_context = memory_context
+        self.show_epochs = show_epochs
         self.use_best_checkpoint = use_best_checkpoint
         
         # Teacher and student
@@ -285,7 +289,7 @@ class DistillationTrainer(BaseTrainer):
                 legal_actions = state.getLegalPacmanActions()
                 action, _ = self.student_agent.getAction(legal_actions, probs)
                 
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, done = env.step(action)
                 
                 if done:
                     next_state = env.reset()
@@ -331,10 +335,11 @@ class DistillationTrainer(BaseTrainer):
                     probs, _ = self.student_agent.forward(state, env_id=val_env_id)
                     legal_actions = state.getLegalPacmanActions()
                     action, _ = self.student_agent.getAction(legal_actions, probs)
-                    state, reward, done, info = env.step(action)
+                    state, reward, done = env.step(action)
                 
-                total_score += info['score']
-                if info['outcome'] == 'win':
+                # Get final score and outcome from the environment
+                total_score += env.game.state.getScore()
+                if env.game.state.isWin():
                     wins += 1
         
         avg_score = total_score / validation_games
@@ -347,7 +352,7 @@ class DistillationTrainer(BaseTrainer):
     
     def get_metric_for_checkpoint(self, val_metrics):
         """Use validation score for checkpointing."""
-        return val_metrics['val_score']
+        return val_metrics['val_score'], 'val_score'
     
     def get_progress_bar_dict(self, train_metrics, val_metrics):
         """Customize progress bar display."""
@@ -356,6 +361,39 @@ class DistillationTrainer(BaseTrainer):
             'Value': f"{train_metrics['value_loss']:.4f}",
             'ValScore': f"{val_metrics['val_score']:.1f}",
         }
+    
+    def on_epoch_end(self, epoch, pbar):
+        """Display student game with graphics at specified intervals."""
+        if self.show_epochs > 0 and (epoch + 1) % self.show_epochs == 0:
+            pbar.write(f"\n{'='*60}")
+            pbar.write(f"Running student game with graphics at epoch {epoch+1}...")
+            pbar.write('='*60)
+            
+            self.model.eval()
+            
+            # Create environment with graphics
+            display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05)
+            val_env = PacmanEnv(self.student_agent, self.layout_name, display=display, env_id=self.batch_size + 100)
+            state = val_env.reset()
+            done = False
+            steps = 0
+            max_steps = 1000
+            
+            with torch.no_grad():
+                while not done and steps < max_steps:
+                    probs, _ = self.student_agent.forward(state, env_id=self.batch_size + 100)
+                    legal_actions = state.getLegalPacmanActions()
+                    action, _ = self.student_agent.getAction(legal_actions, probs)
+                    state, reward, done = val_env.step(action)
+                    steps += 1
+            
+            score = val_env.game.state.getScore()
+            won = val_env.game.state.isWin()
+            
+            pbar.write(f"\nStudent Game Result - Score: {score}, {'WON!' if won else 'Lost'}, Steps: {steps}")
+            pbar.write('='*60 + '\n')
+            
+            self.model.train()
     
     def get_final_summary(self):
         """Get final training summary."""
@@ -385,6 +423,8 @@ def main():
                        help='Learning rate')
     parser.add_argument('--memory-context', type=int, default=5,
                        help='Memory context size')
+    parser.add_argument('--show-epochs', type=int, default=10,
+                       help='Render student game every N epochs (0 to disable)')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to student checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true', default=True,
@@ -403,6 +443,7 @@ def main():
         beta=args.beta,
         lr=args.lr,
         memory_context=args.memory_context,
+        show_epochs=args.show_epochs,
         resume_from=args.resume,
         use_best_checkpoint=args.use_best
     )

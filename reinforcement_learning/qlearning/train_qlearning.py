@@ -317,7 +317,7 @@ def main():
     parser = argparse.ArgumentParser(description='Q-Learning Pacman Training')
     parser.add_argument('--episodes', type=int, default=100, help='Number of training episodes')
     parser.add_argument('--layout', type=str, default='mediumClassic', help='Layout name')
-    parser.add_argument('--render_every', type=int, default=50,
+    parser.add_argument('--render_every', type=int, default=10,
                        help='Render validation game every N episodes (0 to disable)')
     parser.add_argument('--view_speed', type=float, default=0.05, help='Speed of rendered game')
     parser.add_argument('--validation_games', type=int, default=10,

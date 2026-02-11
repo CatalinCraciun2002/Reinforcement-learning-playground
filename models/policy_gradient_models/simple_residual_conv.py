@@ -38,7 +38,18 @@ class ActorCriticNetwork(nn.Module):
         num_residual_blocks: Number of residual blocks (default: 3)
     """
     
-    def __init__(self, memory_context=5, conv_channels=64, num_residual_blocks=3):
+    def __init__(self, memory_context=5, conv_channels=64, num_residual_blocks=3, 
+                 spatial_height=11, spatial_width=20):
+        """
+        Initialize Actor-Critic network.
+        
+        Args:
+            memory_context: Number of previous Pacman positions to track
+            conv_channels: Number of convolutional channels
+            num_residual_blocks: Number of residual blocks
+            spatial_height: Height of the input grid (default: 11 for mediumClassic)
+            spatial_width: Width of the input grid (default: 20 for mediumClassic)
+        """
         super().__init__()
         
         input_channels = 6 + memory_context  # Current state + position history
@@ -54,18 +65,19 @@ class ActorCriticNetwork(nn.Module):
         self.conv_output = nn.Conv2d(conv_channels, 32, 3, padding=1)
         self.bn_output = nn.BatchNorm2d(32)
         
-        # Dynamic FC layer
-        self.fc_shared = None
-        self.fc_shared_input_size = None
-        self.fc_shared_output_size = 256
+        # Static FC layer - size determined by spatial dimensions
+        # Since we use same-padding convolutions, spatial dimensions are preserved
+        fc_input_size = 32 * spatial_height * spatial_width
+        self.fc_shared = nn.Linear(fc_input_size, 256)
+        self.fc_shared_dropout = nn.Dropout(0.5)
         
         # Actor head
-        self.actor_fc1 = nn.Linear(self.fc_shared_output_size, 128)
+        self.actor_fc1 = nn.Linear(256, 128)
         self.actor_fc2 = nn.Linear(128, 5)  # 5 actions: North, South, East, West, Stop
         self.actor_dropout = nn.Dropout(0.5)
         
         # Critic head
-        self.critic_fc1 = nn.Linear(self.fc_shared_output_size, 128)
+        self.critic_fc1 = nn.Linear(256, 128)
         self.critic_fc2 = nn.Linear(128, 1)
         self.critic_dropout = nn.Dropout(0.5)
         
@@ -78,13 +90,6 @@ class ActorCriticNetwork(nn.Module):
         
         out = F.relu(self.bn_output(self.conv_output(out)))
         out = out.view(out.size(0), -1)
-        
-        # Dynamic FC layer initialization
-        if self.fc_shared is None or self.fc_shared_input_size != out.size(1):
-            self.fc_shared_input_size = out.size(1)
-            self.fc_shared = nn.Linear(out.size(1), self.fc_shared_output_size).to(out.device)
-            self.fc_shared_dropout = nn.Dropout(0.5)
-
         
         return F.relu(self.fc_shared_dropout(self.fc_shared(out)))
     
