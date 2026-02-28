@@ -21,7 +21,7 @@ from reinforcement_learning.base_trainer import BaseTrainer
 from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwork
 from human_feedback.data_loader import GameplayDataset
 from agents.policy_gradient_agents.deepRlAgent import RLAgent
-from core.environment import PacmanEnv
+from core.game_orchestrator import GameOrchestrator
 
 
 # Action mapping: string to index
@@ -128,7 +128,8 @@ class HumanFeedbackTrainer(BaseTrainer):
         memory_length=5,
         train_critic=True,
         gamma=0.99,
-        layout_name='mediumClassic',
+        train_suite='standard_only',
+        test_suite='standard_only',
         validation_games=8,
         resume_from=None
     ):
@@ -147,21 +148,21 @@ class HumanFeedbackTrainer(BaseTrainer):
             validation_games: Number of validation games to play each epoch
             resume_from: Path to checkpoint to resume from
         """
-        # Store human feedback specific parameters
         self.data_dir = data_dir
-        self.batch_size_train = batch_size  # Renamed to avoid conflict with base class usage
+        self.batch_size_train = batch_size
         self.memory_length = memory_length
         self.train_critic = train_critic
         self.gamma = gamma
-        self.layout_name = layout_name
+        self.train_suite = train_suite
+        self.test_suite = test_suite
         self.validation_games = validation_games
         self.lr = lr
-        
-        # Data storage
+
         self.train_data = None
         self.episode_scores = None
+        self.agent = None
+        self.orchestrator = None
         
-        # Hyperparameters for logging
         hyperparams = {
             'batch_size': batch_size,
             'learning_rate': lr,
@@ -169,7 +170,8 @@ class HumanFeedbackTrainer(BaseTrainer):
             'gamma': gamma,
             'train_critic': train_critic,
             'num_epochs': num_epochs,
-            'layout': layout_name
+            'train_suite': train_suite,
+            'test_suite': test_suite,
         }
         
         # Initialize base class
@@ -193,18 +195,24 @@ class HumanFeedbackTrainer(BaseTrainer):
         return optim.Adam(model.parameters(), lr=self.lr)
     
     def post_setup(self):
-        """Load and prepare training data after model creation."""
-        # Load dataset
+        """Load and prepare training data, create agent and orchestrator."""
         dataset = GameplayDataset(self.data_dir)
-        
+
         if len(dataset.episodes) == 0:
             raise ValueError("Error: No gameplay recordings found!")
-        
+
         dataset.print_statistics()
-        
-        # Prepare training data
+
         self.train_data, self.episode_scores = prepare_training_data(
             dataset, self.memory_length, gamma=self.gamma
+        )
+
+        self.agent = RLAgent(self.model, memory_context=self.memory_length)
+        self.orchestrator = GameOrchestrator(
+            agent=self.agent,
+            batch_size=1,
+            train_suite_name=self.train_suite,
+            test_suite_name=self.test_suite,
         )
     
     def train_epoch(self, epoch):
@@ -274,38 +282,15 @@ class HumanFeedbackTrainer(BaseTrainer):
         }
     
     def validate(self, epoch):
-        """Validate by playing games without graphics."""
+        """Validate by playing games via the orchestrator."""
         self.model.eval()
-        scores = []
-        
-        for _ in range(self.validation_games):
-            agent = RLAgent(self.model, memory_context=self.memory_length)
-            val_env = PacmanEnv(agent, self.layout_name, display=None)
-            val_env.reset()
-            
-            steps = 0
-            game_done = False
-            max_steps = 1000
-            
-            while not game_done and steps < max_steps:
-                state = val_env.game.state
-                legal = val_env.get_legal(state)
-                
-                if not legal:
-                    break
-                
-                with torch.no_grad():
-                    probs, _ = agent.forward(state)
-                
-                action, action_idx = agent.getAction(legal, probs)
-                _, reward, game_done = val_env.step(action)
-                steps += 1
-            
-            score = val_env.game.state.getScore()
-            scores.append(score)
-        
+
+        results = self.orchestrator.run_validation(
+            n_games=self.validation_games, with_graphics=False
+        )
+        scores = [r[0] for r in results]
         avg_score = np.mean(scores)
-        
+
         return {
             'Score/validation': avg_score
         }
@@ -345,8 +330,10 @@ def main():
                        help='Do not train the critic head')
     parser.add_argument('--gamma', type=float, default=0.99,
                        help='Discount factor for computing returns')
-    parser.add_argument('--layout', type=str, default='mediumClassic',
-                       help='Layout to use for validation games')
+    parser.add_argument('--train-suite', type=str, default='standard_only',
+                       help='Scenario suite name for training')
+    parser.add_argument('--test-suite', type=str, default='standard_only',
+                       help='Scenario suite name for validation')
     parser.add_argument('--validation-games', type=int, default=8,
                        help='Number of validation games to play each epoch')
     parser.add_argument('--resume', type=str, default=None,
@@ -362,7 +349,8 @@ def main():
         memory_length=args.memory_length,
         train_critic=not args.no_critic,
         gamma=args.gamma,
-        layout_name=args.layout,
+        train_suite=args.train_suite,
+        test_suite=args.test_suite,
         validation_games=args.validation_games,
         resume_from=args.resume
     )

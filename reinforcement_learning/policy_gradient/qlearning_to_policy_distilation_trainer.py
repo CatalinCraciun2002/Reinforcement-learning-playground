@@ -21,10 +21,8 @@ from reinforcement_learning.base_trainer import BaseTrainer
 from runs.logger import TensorBoardLogger
 from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwork
 from agents.qlearning_agents.qlearning_agent import ApproximateQAgent
-from core.environment import PacmanEnv
 from agents.policy_gradient_agents.deepRlAgent import RLAgent
-import core.layout as layout_module
-from display import graphicsDisplay
+from core.game_orchestrator import GameOrchestrator
 
 
 class DistillationTrainer(BaseTrainer):
@@ -42,7 +40,8 @@ class DistillationTrainer(BaseTrainer):
         num_epochs=100,
         batch_size=16,
         steps_per_epoch=20,
-        layout_name='mediumClassic',
+        train_suite='standard_only',
+        test_suite='standard_only',
         temperature=2.0,
         beta=0.5,
         lr=1e-4,
@@ -59,7 +58,8 @@ class DistillationTrainer(BaseTrainer):
             num_epochs: Number of training epochs
             batch_size: Number of parallel environments
             steps_per_epoch: Steps per environment per epoch
-            layout_name: Pacman layout to use
+            train_suite: Scenario suite name for training
+            test_suite: Scenario suite name for validation
             temperature: Softmax temperature for teacher (higher = softer)
             beta: Weight for value loss (0 = only policy distillation)
             lr: Learning rate
@@ -71,28 +71,29 @@ class DistillationTrainer(BaseTrainer):
         self.teacher_checkpoint = teacher_checkpoint
         self.batch_size = batch_size
         self.steps_per_epoch = steps_per_epoch
-        self.layout_name = layout_name
+        self.train_suite = train_suite
+        self.test_suite = test_suite
         self.temperature = temperature
         self.beta = beta
         self.lr = lr
         self.memory_context = memory_context
         self.show_epochs = show_epochs
         self.use_best_checkpoint = use_best_checkpoint
-        
+
         # Teacher and student
         self.teacher = None
         self.student_agent = None
-        self.envs = None
-        
+        self.orchestrator = None
+
         # Metrics
         self.total_steps = 0
-        
-        # Initialize parent with corrected parameters
+
         hyperparams_dict = {
             'num_epochs': num_epochs,
             'batch_size': batch_size,
             'steps_per_epoch': steps_per_epoch,
-            'layout': layout_name,
+            'train_suite': train_suite,
+            'test_suite': test_suite,
             'temperature': temperature,
             'beta': beta,
             'learning_rate': lr,
@@ -116,21 +117,20 @@ class DistillationTrainer(BaseTrainer):
         return optim.Adam(model.parameters(), lr=self.lr)
     
     def post_setup(self):
-        """Load teacher and setup environments after model/optimizer creation."""
-        # Load teacher Q-learning agent
+        """Load teacher and setup orchestrator after model/optimizer creation."""
         print(f"\nLoading teacher Q-learning model from: {self.teacher_checkpoint}")
         self.teacher = self._load_teacher()
         print(f"✓ Teacher loaded successfully")
         print(f"  Teacher weights: {len(self.teacher.weights)} features")
-        
-        # Create student agent
+
         self.student_agent = RLAgent(self.model, memory_context=self.memory_context)
-        
-        # Create environments with proper env_id tracking
-        self.envs = [
-            PacmanEnv(self.student_agent, self.layout_name, env_id=i) 
-            for i in range(self.batch_size)
-        ]
+
+        self.orchestrator = GameOrchestrator(
+            agent=self.student_agent,
+            batch_size=self.batch_size,
+            train_suite_name=self.train_suite,
+            test_suite_name=self.test_suite,
+        )
         print(f"✓ Created {self.batch_size} parallel environments")
     
     def _load_teacher(self):
@@ -205,97 +205,72 @@ class DistillationTrainer(BaseTrainer):
         return action_probs, max_q_value
     
     def train_epoch(self, epoch):
-        """
-        Train for one epoch by collecting data and distilling knowledge.
-        
-        Args:
-            epoch: Current epoch number
-            
-        Returns:
-            dict: Training metrics
-        """
+        """Train for one epoch by collecting data and distilling knowledge."""
         self.model.train()
-        
-        # Metrics
+        self.orchestrator.set_epoch(epoch)
+
         epoch_kl_loss = 0.0
         epoch_value_loss = 0.0
         epoch_total_loss = 0.0
         num_steps = 0
-        
-        # Reset environments and initialize agents
-        states = []
-        for env_idx, env in enumerate(self.envs):
-            state = env.reset()
-            states.append(state)
-        
-        # Collect data and train
+
+        # Reset all envs and grab initial states
+        for env_idx in range(self.batch_size):
+            self.orchestrator.reset(env_idx)
+        states = self.orchestrator.get_all_states()
+
         for step in range(self.steps_per_epoch):
-            # Get teacher and student predictions for all environments
             teacher_probs_batch = []
             teacher_max_q_batch = []
             student_states_batch = []
-            
-            for env_idx, (env, state) in enumerate(zip(self.envs, states)):
-                # Get current state tensor
+
+            for env_idx, state in enumerate(states):
                 state_tensor = self.student_agent.state_to_tensor(state, env_id=env_idx)
                 student_states_batch.append(state_tensor)
-                
-                # Get teacher probabilities
                 teacher_probs, max_q = self._get_teacher_probs(state)
                 teacher_probs_batch.append(teacher_probs)
                 teacher_max_q_batch.append(max_q)
-            
-            # Stack batch - each state_tensor already has batch dim
+
             student_states_batch = torch.cat(student_states_batch, dim=0)
             teacher_probs_batch = torch.stack(teacher_probs_batch)
             teacher_max_q_batch = torch.tensor(teacher_max_q_batch, dtype=torch.float32).unsqueeze(1)
-            
-            # Get student predictions
+
             student_probs, student_values = self.model(student_states_batch, return_both=True)
-            
-            # Compute KL divergence loss (main distillation loss)
-            # KL(teacher || student) = sum(teacher * log(teacher / student))
+
             kl_loss = F.kl_div(
                 student_probs.log(),
                 teacher_probs_batch,
                 reduction='batchmean',
                 log_target=False
             )
-            
-            # Compute value loss (optional)
             value_loss = F.mse_loss(student_values, teacher_max_q_batch)
-            
-            # Total loss
             total_loss = kl_loss + self.beta * value_loss
-            
-            # Backpropagation
+
             self.optimizer.zero_grad()
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
-            
-            # Update metrics
+
             epoch_kl_loss += kl_loss.item()
             epoch_value_loss += value_loss.item()
             epoch_total_loss += total_loss.item()
             num_steps += 1
             self.total_steps += self.batch_size
-            
-            # Take actions in environments (use student for exploration)
+
             new_states = []
-            for env_idx, (env, state) in enumerate(zip(self.envs, states)):
-                # Get action probabilities from student
+            for env_idx, state in enumerate(states):
                 probs, _ = self.student_agent.forward(state, env_id=env_idx)
                 legal_actions = state.getLegalPacmanActions()
                 action, _ = self.student_agent.getAction(legal_actions, probs)
-                
-                next_state, reward, done = env.step(action)
-                
+
+                next_state, reward, done = self.orchestrator.step(env_idx, action)
+
                 if done:
-                    next_state = env.reset()
-                
+                    self.orchestrator.reset(env_idx)
+                    next_state = self.orchestrator.get_state(env_idx)
+
                 new_states.append(next_state)
-            
+
             states = new_states
         
         # Average metrics
@@ -308,46 +283,16 @@ class DistillationTrainer(BaseTrainer):
         return metrics
     
     def validate(self, epoch):
-        """
-        Run validation games.
-        
-        Args:
-            epoch: Current epoch number
-            
-        Returns:
-            dict: Validation metrics
-        """
+        """Run validation games via the orchestrator."""
         self.model.eval()
-        
-        validation_games = 8
-        total_score = 0
-        wins = 0
-        
-        with torch.no_grad():
-            for _ in range(validation_games):
-                # Create validation environment with unique env_id
-                val_env_id = self.batch_size + _  # Use IDs beyond training envs
-                env = PacmanEnv(self.student_agent, self.layout_name, env_id=val_env_id)
-                state = env.reset()
-                done = False
-                
-                while not done:
-                    probs, _ = self.student_agent.forward(state, env_id=val_env_id)
-                    legal_actions = state.getLegalPacmanActions()
-                    action, _ = self.student_agent.getAction(legal_actions, probs)
-                    state, reward, done = env.step(action)
-                
-                # Get final score and outcome from the environment
-                total_score += env.game.state.getScore()
-                if env.game.state.isWin():
-                    wins += 1
-        
-        avg_score = total_score / validation_games
-        win_rate = wins / validation_games
-        
+
+        results = self.orchestrator.run_validation(n_games=8, with_graphics=False)
+        val_scores = [r[0] for r in results]
+        val_wins = [1 if r[1] else 0 for r in results]
+
         return {
-            'val_score': avg_score,
-            'val_win_rate': win_rate,
+            'val_score': sum(val_scores) / len(val_scores),
+            'val_win_rate': sum(val_wins) / len(val_wins),
         }
     
     def get_metric_for_checkpoint(self, val_metrics):
@@ -368,31 +313,13 @@ class DistillationTrainer(BaseTrainer):
             pbar.write(f"\n{'='*60}")
             pbar.write(f"Running student game with graphics at epoch {epoch+1}...")
             pbar.write('='*60)
-            
+
             self.model.eval()
-            
-            # Create environment with graphics
-            display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05)
-            val_env = PacmanEnv(self.student_agent, self.layout_name, display=display, env_id=self.batch_size + 100)
-            state = val_env.reset()
-            done = False
-            steps = 0
-            max_steps = 1000
-            
-            with torch.no_grad():
-                while not done and steps < max_steps:
-                    probs, _ = self.student_agent.forward(state, env_id=self.batch_size + 100)
-                    legal_actions = state.getLegalPacmanActions()
-                    action, _ = self.student_agent.getAction(legal_actions, probs)
-                    state, reward, done = val_env.step(action)
-                    steps += 1
-            
-            score = val_env.game.state.getScore()
-            won = val_env.game.state.isWin()
-            
+            score, won, steps = self.orchestrator.run_single_validation(with_graphics=True)
+
             pbar.write(f"\nStudent Game Result - Score: {score}, {'WON!' if won else 'Lost'}, Steps: {steps}")
             pbar.write('='*60 + '\n')
-            
+
             self.model.train()
     
     def get_final_summary(self):
@@ -413,8 +340,10 @@ def main():
                        help='Number of parallel environments')
     parser.add_argument('--steps-per-epoch', type=int, default=20,
                        help='Steps per environment per epoch')
-    parser.add_argument('--layout', type=str, default='mediumClassic',
-                       help='Layout name')
+    parser.add_argument('--train-suite', type=str, default='standard_only',
+                       help='Scenario suite name for training')
+    parser.add_argument('--test-suite', type=str, default='standard_only',
+                       help='Scenario suite name for validation')
     parser.add_argument('--temperature', type=float, default=2.0,
                        help='Softmax temperature for teacher (higher = softer)')
     parser.add_argument('--beta', type=float, default=0.5,
@@ -432,13 +361,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Create and run trainer
     trainer = DistillationTrainer(
         teacher_checkpoint=args.teacher_checkpoint,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         steps_per_epoch=args.steps_per_epoch,
-        layout_name=args.layout,
+        train_suite=args.train_suite,
+        test_suite=args.test_suite,
         temperature=args.temperature,
         beta=args.beta,
         lr=args.lr,
