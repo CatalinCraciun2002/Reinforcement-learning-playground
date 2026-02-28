@@ -17,15 +17,15 @@ from reinforcement_learning.base_trainer import BaseTrainer
 from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwork
 from agents.policy_gradient_agents.deepRlAgent import RLAgent
 from core.environment import PacmanEnv
+from games.hard_pacman_game import HardPacmanGame
 from core.game import Directions
 from display import graphicsDisplay
 
 
-def run_validation_game(agent, layout_name='mediumClassic', with_graphics=True, max_steps=1000):
+def run_validation_game(agent, game=None, with_graphics=True, max_steps=1000):
     """Run a validation game and return score, win status, and steps taken."""
     display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05) if with_graphics else None
-    val_env = PacmanEnv(agent, layout_name, add_extra_ghost=True, display=display)
-    val_env.reset()
+    val_env = PacmanEnv(agent, game or HardPacmanGame(), display=display)
     
     steps = 0
     game_done = False
@@ -58,7 +58,7 @@ class PolicyGradientTrainer(BaseTrainer):
         num_epochs=100,
         batch_size=32,
         steps_per_epoch=20,
-        layout_name='mediumClassic',
+        game=None,
         gamma=0.95,
         lam=0.95,
         lr=1e-4,
@@ -76,7 +76,7 @@ class PolicyGradientTrainer(BaseTrainer):
             num_epochs: Number of training epochs
             batch_size: Number of parallel environments
             steps_per_epoch: Number of steps per environment per epoch
-            layout_name: Layout to train on
+            game: Game instance defining layout + rewards + rules (default: HardPacmanGame)
             gamma: Discount factor
             lam: GAE lambda parameter
             lr: Learning rate
@@ -87,10 +87,9 @@ class PolicyGradientTrainer(BaseTrainer):
             use_best_checkpoint: If True, load best checkpoint instead of last
             save_visualization_data: If True, save training visualization data
         """
-        # Store policy-gradient specific hyperparameters
         self.batch_size = batch_size
         self.steps_per_epoch = steps_per_epoch
-        self.layout_name = layout_name
+        self.game = game or HardPacmanGame()
         self.gamma = gamma
         self.lam = lam
         self.lr = lr
@@ -98,7 +97,6 @@ class PolicyGradientTrainer(BaseTrainer):
         self.show_epochs = show_epochs
         self.validation_games = validation_games
         
-        # Hyperparameters for logging
         hyperparams = {
             'num_epochs': num_epochs,
             'batch_size': batch_size,
@@ -106,7 +104,8 @@ class PolicyGradientTrainer(BaseTrainer):
             'learning_rate': lr,
             'gamma': gamma,
             'lambda': lam,
-            'layout': layout_name,
+            'layout': self.game.layout_name,
+            'game': type(self.game).__name__,
             'memory_context': memory_context,
             'pretrained': resume_from is not None,
             'use_best_checkpoint': use_best_checkpoint
@@ -141,9 +140,9 @@ class PolicyGradientTrainer(BaseTrainer):
         # Create agent
         self.agent = RLAgent(self.model, memory_context=self.memory_context)
         
-        # Create environments with proper env_id tracking
+        # Create batch environments using the configured game
         self.envs = [
-            PacmanEnv(self.agent, self.layout_name, add_extra_ghost=True, env_id=i) 
+            PacmanEnv(self.agent, self.game, env_id=i)
             for i in range(self.batch_size)
         ]
         
@@ -359,7 +358,7 @@ class PolicyGradientTrainer(BaseTrainer):
         val_scores = []
         val_wins = []
         for _ in range(self.validation_games):
-            score, won, steps = run_validation_game(self.agent, self.layout_name, with_graphics=False)
+            score, won, steps = run_validation_game(self.agent, self.game, with_graphics=False)
             val_scores.append(score)
             val_wins.append(1 if won else 0)
         
@@ -393,7 +392,7 @@ class PolicyGradientTrainer(BaseTrainer):
             pbar.write('='*60)
             
             self.model.eval()
-            score, won, steps = run_validation_game(self.agent, self.layout_name, with_graphics=True)
+            score, won, steps = run_validation_game(self.agent, self.game, with_graphics=True)
             
             pbar.write(f"\nValidation Result - Score: {score}, {'WON!' if won else 'Lost'}, Steps: {steps}")
             pbar.write('='*60 + '\n')
@@ -477,7 +476,7 @@ def main():
         
         # Run a single validation game with graphics
         print("Starting validation game with graphics...")
-        score, won, steps = run_validation_game(agent, args.layout, with_graphics=True)
+        score, won, steps = run_validation_game(agent, with_graphics=True)
         
         print(f"\nValidation Result:")
         print(f"  Score: {score}")
@@ -491,7 +490,6 @@ def main():
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         steps_per_epoch=args.steps_per_epoch,
-        layout_name=args.layout,
         gamma=args.gamma,
         lam=args.lam,
         lr=args.lr,
