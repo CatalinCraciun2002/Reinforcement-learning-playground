@@ -3,13 +3,16 @@ Base Scenario class — defines the contract for all Pacman game configurations.
 
 Every concrete Scenario must:
   1. Define define_scores() as its FIRST method
-  2. Specify a layout_name
-  3. Optionally override build_ghosts / add_ghosts / add_power_ups / add_points
-     to customise the game after each reset.
+  2. Specify a layout_name property
+  3. Optionally override build_ghosts(lay) to customise ghost placement.
+     The default builds one RandomGhost per ghost position in the layout.
+  4. Optionally override add_power_ups(env) / add_points(env) for post-reset
+     food/capsule overrides that need the live game state.
 """
 
 from abc import ABC, abstractmethod
 
+from core import layout as layout_module
 from agents.base_agents import ghostAgents
 
 
@@ -48,62 +51,42 @@ class Scenario(ABC):
     def layout_name(self) -> str:
         """Name of the .lay file (without extension) to load."""
 
+    def build_layout(self):
+        """Load and return the Layout object for this scenario.
+
+        Override to return a custom/procedurally generated Layout.
+        The default loads the layout file specified by layout_name.
+        """
+        return layout_module.getLayout(self.layout_name)
+
     # ------------------------------------------------------------------ #
     #  GHOST BUILDING                                                      #
     # ------------------------------------------------------------------ #
 
-    def build_ghosts(self, num_ghosts: int) -> list:
-        """Build and return the ghost agent list to pass to ClassicGameRules.newGame().
+    def build_ghosts(self, lay) -> list:
+        """Build and return the ghost agent list for this scenario.
 
-        Override to fully control which ghosts are created. The default is all
-        RandomGhosts. Use add_ghosts() when ghost placement depends on game state
-        (e.g. relative to Pacman's spawn position).
+        Receives the Layout object so it can inspect ghost positions,
+        Pacman's spawn position, walls, etc. without needing the live
+        game state.
+
+        The default creates one RandomGhost per ghost slot in the layout.
+        Override to fully control ghost types and placement.
 
         Args:
-            num_ghosts: Number of ghosts as determined by the layout (or
-                        overridden by self.num_ghosts).
+            lay: The Layout object returned by build_layout().
         """
-        return [ghostAgents.RandomGhost(i + 1) for i in range(num_ghosts)]
+        return [ghostAgents.RandomGhost(i + 1) for i in range(lay.getNumGhosts())]
 
     # ------------------------------------------------------------------ #
     #  POST-RESET SETUP                                                    #
     # ------------------------------------------------------------------ #
 
     def setup(self, env) -> None:
-        """Called once after every env reset to apply scenario-specific overrides.
-
-        The environment calls this instead of managing each override individually.
-        Subclasses should override add_ghosts / add_power_ups / add_points — not
-        this method — unless they need to coordinate across all three.
-        """
-        if type(self).add_ghosts is not Scenario.add_ghosts:
-            self.add_ghosts(env)
-        if type(self).add_power_ups is not Scenario.add_power_ups:
-            self.add_power_ups(env)
-        if type(self).add_points is not Scenario.add_points:
-            self.add_points(env)
-
-    def add_ghosts(self, env) -> None:
-        """Inject extra ghost agents after the game is created.
-
-        Override to add ghosts on top of (or instead of) what build_ghosts()
-        provides. Receives the PacmanEnv instance.
-        Leave unimplemented to keep the ghosts from build_ghosts().
+        """Called once after every env reset. Override for post-reset changes
+        that require the live game state (e.g. dynamic actor injection).
         """
 
-    def add_power_ups(self, env) -> None:
-        """Override capsule positions after environment reset.
-
-        When implemented, clears layout capsules and places new ones.
-        Leave unimplemented to keep layout defaults.
-        """
-
-    def add_points(self, env) -> None:
-        """Override food grid after environment reset.
-
-        When implemented, clears layout food and places new pellets.
-        Leave unimplemented to keep layout defaults.
-        """
 
     # ------------------------------------------------------------------ #
     #  SETTINGS                                                            #
@@ -113,11 +96,6 @@ class Scenario(ABC):
     def allow_stop(self) -> bool:
         """Whether Pacman can use the STOP action. Default: True."""
         return True
-
-    @property
-    def num_ghosts(self) -> int:
-        """Number of ghosts to spawn from layout. Default: layout default."""
-        return None  # None = use layout's ghost count
 
     # ------------------------------------------------------------------ #
     #  REWARD HELPERS  (internal, computed once on first access)          #

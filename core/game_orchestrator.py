@@ -80,7 +80,7 @@ class GameOrchestrator:
     def reset(self, env_idx):
         """Reset a training env with the next scenario from the training suite."""
         scenario = self._pick_train_scenario(env_idx)
-        self._envs[env_idx].set_game(scenario)
+        self._envs[env_idx].set_scenario(scenario)
 
     def get_legal(self, env_idx, state):
         """Get legal actions for a training env."""

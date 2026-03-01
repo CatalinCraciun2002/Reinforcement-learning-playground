@@ -29,7 +29,7 @@ class MediumClassicPacmanScenario(Scenario):
     def layout_name(self) -> str:
         return 'mediumClassic'
 
-    def build_ghosts(self, num_ghosts: int) -> list:
+    def build_ghosts(self, lay) -> list:
         """One RandomGhost and one DirectionalGhost."""
         return [
             ghostAgents.RandomGhost(1),

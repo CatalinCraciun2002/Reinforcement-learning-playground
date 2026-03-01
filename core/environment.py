@@ -1,16 +1,14 @@
 """
 Pacman RL Environment Wrapper
 
-PacmanEnv accepts a Scenario instance (from scenarios/) instead of a layout name.
-The Scenario defines the layout, reward values, and optional overrides for
-ghosts, food, and capsules.
+PacmanEnv is a thin game runner. All configuration — layout, ghosts, rewards,
+post-reset hooks — lives in the Scenario object passed at construction time.
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import layout
 from core.pacman import ClassicGameRules
 from display import textDisplay
 from core.game import Directions
@@ -19,27 +17,32 @@ from core.game import Directions
 class PacmanEnv:
     """Pacman environment driven by a Scenario configuration object."""
 
-    def __init__(self, agent, game, display=None, env_id=0):
+    def __init__(self, agent, scenario, display=None, env_id=0):
         """
         Args:
-            agent:       The Pacman RL agent.
-            game:        A Scenario instance (from scenarios/) defining layout + rewards + overrides.
-            display:     Optional display (default: headless NullGraphics).
-            env_id:      Integer ID used for multi-environment memory contexts.
+            agent:    The Pacman RL agent.
+            scenario: A Scenario instance defining layout, ghosts, and rewards.
+            display:  Optional display (default: headless NullGraphics).
+            env_id:   Integer ID used for multi-environment memory contexts.
         """
         self.agent = agent
-        self.game_config = game   # Scenario config (layout, rewards, overrides)
+        self._scenario = scenario
         self._game = None         # Running core.Game instance
         self.wins = 0
         self.display = display or textDisplay.NullGraphics()
         self.env_id = env_id
-        self.epoch = 0            # Set by the training loop; synced to game_config each step
+        self.epoch = 0            # Set by the training loop; synced to scenario each step
         self._score = 0.0         # Accumulated raw score for the current episode
         self.reset()
 
     # ------------------------------------------------------------------ #
     #  PUBLIC API                                                          #
     # ------------------------------------------------------------------ #
+
+    @property
+    def scenario(self):
+        """The active Scenario configuration object."""
+        return self._scenario
 
     @property
     def game(self):
@@ -51,24 +54,22 @@ class PacmanEnv:
         """Shortcut to the current game state."""
         return self._game.state
 
-    def set_game(self, game):
+    def set_scenario(self, scenario):
         """Swap the active scenario and reset the environment.
 
         Useful for curriculum training — change layout or rules mid-training
         without recreating the env or agent.
 
         Args:
-            game: New Scenario instance to use from the next episode onward.
+            scenario: New Scenario instance to use from the next episode onward.
         """
-        self.game_config = game
+        self._scenario = scenario
         self.reset()
 
     def reset(self):
         """Reset to a fresh episode and return the initial game state."""
-        lay = layout.getLayout(self.game_config.layout_name)
-
-        num_ghosts = self.game_config.num_ghosts or lay.getNumGhosts()
-        ghosts = self.game_config.build_ghosts(num_ghosts)
+        lay = self._scenario.build_layout()
+        ghosts = self._scenario.build_ghosts(lay)
 
         rules = ClassicGameRules()
         self._game = rules.newGame(
@@ -79,7 +80,7 @@ class PacmanEnv:
         self.display.initialize(self._game.state.data)
 
         self._score = 0.0
-        self.game_config.setup(self)
+        self._scenario.setup(self)
 
         return self._game.state
 
@@ -88,7 +89,7 @@ class PacmanEnv:
         gi = self._game
 
         # Sync epoch so scenario can read self.epoch in any hook
-        self.game_config.epoch = self.epoch
+        self._scenario.epoch = self.epoch
 
         prev_food      = gi.state.getNumFood()
         prev_capsules  = len(gi.state.getCapsules())
@@ -109,32 +110,32 @@ class PacmanEnv:
         gi.rules.process(gi.state, gi)
 
         # Reward accumulation
-        reward = self.game_config.raw('time')
+        reward = self._scenario.raw('time')
 
         food_eaten     = prev_food - gi.state.getNumFood()
-        reward        += food_eaten * self.game_config.raw('food')
+        reward        += food_eaten * self._scenario.raw('food')
 
         capsules_eaten = prev_capsules - len(gi.state.getCapsules())
-        reward        += capsules_eaten * self.game_config.raw('capsule')
+        reward        += capsules_eaten * self._scenario.raw('capsule')
 
         curr_scared = [g.scaredTimer for g in gi.state.getGhostStates()]
         for psc, csc in zip(prev_scared, curr_scared):
             if psc > 0 and csc == 0:
-                reward += self.game_config.raw('ghost')
+                reward += self._scenario.raw('ghost')
 
         done = gi.gameOver
         if done:
             if gi.state.isWin():
-                reward += self.game_config.raw('win')
+                reward += self._scenario.raw('win')
                 self.wins += 1
             elif gi.state.isLose():
-                reward += self.game_config.raw('death')
+                reward += self._scenario.raw('death')
 
         # Keep UI score in sync with our scenario's scoring
         self._score += reward
         gi.state.data.score = int(self._score)
 
-        return gi.state, reward / self.game_config.reward_scale(), done
+        return gi.state, reward / self._scenario.reward_scale(), done
 
     @property
     def is_over(self):
@@ -142,6 +143,6 @@ class PacmanEnv:
 
     def get_legal(self, state):
         legal = state.getLegalPacmanActions()
-        if not self.game_config.allow_stop and Directions.STOP in legal:
+        if not self._scenario.allow_stop and Directions.STOP in legal:
             legal.remove(Directions.STOP)
         return legal

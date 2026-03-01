@@ -190,9 +190,9 @@ class PolicyGradientTrainer(BaseTrainer):
             
             # Compute and store old log probs (detached)
             action_indices_tensor = torch.tensor(action_indices, dtype=torch.long)
-            old_log_probs = torch.log(
-                probs_batch[torch.arange(self.batch_size), action_indices_tensor] + 1e-10
-            ).detach()
+            old_log_probs = self.model.last_log_probs[
+                torch.arange(self.batch_size), action_indices_tensor
+            ].detach()
             
             for env_idx in range(self.batch_size):
                 env_data[env_idx]['state_tensors'].append(step_tensors[env_idx])
@@ -306,12 +306,13 @@ class PolicyGradientTrainer(BaseTrainer):
                 new_probs, new_values = self.model(mb_states, return_both=True)
                 new_values = new_values.squeeze(-1)
                 
-                new_log_probs = torch.log(
-                    new_probs[torch.arange(len(mb_idx)), mb_actions] + 1e-10
-                )
-                
+                new_log_probs = self.model.last_log_probs[
+                    torch.arange(len(mb_idx)), mb_actions
+                ]
+
                 # PPO clipped surrogate
                 ratio = torch.exp(new_log_probs - mb_old_log_probs)
+                ratio = torch.clamp(ratio, 1e-3, 10.0)  # Safety clamp: prevent extreme ratios spiking loss
                 surr1 = ratio * mb_advantages
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * mb_advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
@@ -320,10 +321,13 @@ class PolicyGradientTrainer(BaseTrainer):
                 critic_loss = ((new_values - mb_returns) ** 2).mean()
                 
                 # Entropy bonus
-                entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=1).mean()
+                entropy = -(new_probs * self.model.last_log_probs).sum(dim=1).mean()
                 
                 loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy
-                
+
+                if torch.isnan(loss) or torch.isinf(loss):
+                    continue  # skip corrupted mini-batch
+
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
@@ -334,7 +338,7 @@ class PolicyGradientTrainer(BaseTrainer):
                 total_entropy += entropy.item()
                 total_loss_val += loss.item()
                 num_updates += 1
-        
+
         self.wins += self.orchestrator.total_wins()
         
         if self.save_visualization_data:
@@ -420,14 +424,14 @@ class PolicyGradientTrainer(BaseTrainer):
 
 def main():
     parser = argparse.ArgumentParser(description='PPO Pacman Training')
-    parser.add_argument('--num-epochs', type=int, default=500, help='Number of training epochs')
+    parser.add_argument('--num-epochs', type=int, default=400, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
-    parser.add_argument('--steps-per-epoch', type=int, default=32, help='Steps per environment per epoch')
+    parser.add_argument('--steps-per-epoch', type=int, default=64, help='Steps per environment per epoch')
     parser.add_argument('--gamma', type=float, default=0.95, help='Discount factor')
     parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--clip-epsilon', type=float, default=0.2, help='PPO clipping epsilon')
-    parser.add_argument('--ppo-epochs', type=int, default=4, help='PPO optimization epochs per rollout')
+    parser.add_argument('--ppo-epochs', type=int, default=6, help='PPO optimization epochs per rollout')
     parser.add_argument('--mini-batch-size', type=int, default=128, help='Mini-batch size for PPO updates')
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
     parser.add_argument('--show-epochs', type=int, default=5, 
@@ -440,7 +444,7 @@ def main():
     parser.add_argument('--test-suite', type=str, default='custom_only',
                        help='Name of the scenario suite for validation')
 
-    parser.add_argument('--resume', type=str, default=None,
+    parser.add_argument('--resume', type=str, default='runs\\policy_gradient\\20260301_203731',
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
                        help='Load best checkpoint instead of last', default=False)

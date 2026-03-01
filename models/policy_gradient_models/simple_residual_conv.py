@@ -69,17 +69,14 @@ class ActorCriticNetwork(nn.Module):
         # Since we use same-padding convolutions, spatial dimensions are preserved
         fc_input_size = 32 * spatial_height * spatial_width
         self.fc_shared = nn.Linear(fc_input_size, 256)
-        self.fc_shared_dropout = nn.Dropout(0.5)
         
         # Actor head
         self.actor_fc1 = nn.Linear(256, 128)
         self.actor_fc2 = nn.Linear(128, 5)  # 5 actions: North, South, East, West, Stop
-        self.actor_dropout = nn.Dropout(0.5)
         
         # Critic head
         self.critic_fc1 = nn.Linear(256, 128)
         self.critic_fc2 = nn.Linear(128, 1)
-        self.critic_dropout = nn.Dropout(0.5)
         
     def forward_backbone(self, x):
         """Shared feature extraction."""
@@ -91,18 +88,17 @@ class ActorCriticNetwork(nn.Module):
         out = F.relu(self.bn_output(self.conv_output(out)))
         out = out.view(out.size(0), -1)
         
-        return F.relu(self.fc_shared_dropout(self.fc_shared(out)))
+        return F.relu(self.fc_shared(out))
     
     def forward_actor(self, shared_features):
-        """Policy head: action probabilities."""
+        """Policy head: action probabilities and log-probabilities."""
         out = F.relu(self.actor_fc1(shared_features))
-        out = self.actor_dropout(out)
-        return F.softmax(self.actor_fc2(out), dim=1)
+        log_probs = F.log_softmax(self.actor_fc2(out), dim=1)
+        return log_probs.exp(), log_probs  # (probs, log_probs)
     
     def forward_critic(self, shared_features):
         """Value head: state value estimate."""
         out = F.relu(self.critic_fc1(shared_features))
-        out = self.critic_dropout(out)
         return self.critic_fc2(out)
     
     def forward(self, x, return_both=True):
@@ -117,7 +113,8 @@ class ActorCriticNetwork(nn.Module):
             (action_probs, values) if return_both else action_probs
         """
         features = self.forward_backbone(x)
-        
+        probs, self.last_log_probs = self.forward_actor(features)
+
         if return_both:
-            return self.forward_actor(features), self.forward_critic(features)
-        return self.forward_actor(features)
+            return probs, self.forward_critic(features)
+        return probs
