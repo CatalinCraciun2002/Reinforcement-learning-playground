@@ -45,8 +45,7 @@ from core.game import Directions
 from core.game import Actions
 from core.util import nearestPoint
 from core.util import manhattanDistance
-import core.util as util
-import core.layout as layout
+from core import layout
 import sys, types, time, random, os
 
 ###################################################
