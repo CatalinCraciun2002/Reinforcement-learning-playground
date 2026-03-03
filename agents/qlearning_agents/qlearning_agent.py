@@ -18,16 +18,15 @@ from reinforcement_learning.distance_utils import closestTarget
 class SimpleExtractor:
     """
     Returns features for Pacman:
-    - active-ghosts-1-step: # of dangerous ghosts 1 step away
-    - active-ghosts-2-step: # of dangerous ghosts 2 steps away
-    - active-ghosts-3-step: # of dangerous ghosts 3 steps away
-    - closest-active-ghost: distance to closest active ghost (reciprocal)
-    - scared-ghosts-1-step: # of scared ghosts 1 step away
-    - scared-ghosts-2-step: # of scared ghosts 2 steps away
-    - scared-ghosts-3-step: # of scared ghosts 3 steps away
-    - closest-scared-ghost: distance to closest scared ghost (reciprocal)
+    - bias: 1.0
+    - ghost-{i}-distance: normalized distance to ghost i (1-5)
+    - ghost-{i}-scared: 1.0 if ghost i is scared, 0.0 otherwise
+    - #-of-active-ghosts-1-step-away: # of dangerous ghosts 1 step away
+    - #-of-scared-ghosts-1-step-away: # of scared ghosts 1 step away
     - eats-food: 1.0 if pacman eats food
     - closest-food: distance to closest food
+    - closest-capsule: distance to closest power capsule
+    - #-of-capsules: number of remaining capsules
     """
     def getFeatures(self, state, action):
         features = util.Counter()
@@ -38,19 +37,32 @@ class SimpleExtractor:
         dx, dy = Actions.directionToVector(action)
         next_x, next_y = int(x + dx), int(y + dy)
         
-        # Distinguish between active and scared ghosts
+        # Get normalization factor
+        norm_factor = state.getWalls().width * state.getWalls().height
+        
+        # Ghost features (individual distances and scared status)
+        ghost_states = state.getGhostStates()
         active_ghosts = []
         scared_ghosts = []
-        for ghost in state.getGhostStates():
-            if ghost.scaredTimer > 0:
-                scared_ghosts.append(ghost.getPosition())
-            else:
-                active_ghosts.append(ghost.getPosition())
         
-        # Count dangerous ghosts at various distances
-        def get_dist(p1, p2):
-            return abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
-
+        for i, ghost in enumerate(ghost_states, start=1):
+            ghost_pos = ghost.getPosition()
+            ghost_dist = closestTarget((next_x, next_y), [ghost_pos], state.getWalls(), is_grid=False)
+            
+            if ghost_dist is not None:
+                features[f'ghost-{i}-distance'] = float(ghost_dist) / norm_factor
+            else:
+                features[f'ghost-{i}-distance'] = 1.0  # Max distance if unreachable
+            
+            features[f'ghost-{i}-scared'] = 1.0 if ghost.scaredTimer > 0 else 0.0
+            
+            # Collect for legacy features
+            if ghost.scaredTimer > 0:
+                scared_ghosts.append(ghost_pos)
+            else:
+                active_ghosts.append(ghost_pos)
+        
+        # Count dangerous ghosts 1-step away (legacy feature)
         features['#-of-active-ghosts-1-step-away'] = sum(
             get_dist((next_x, next_y), g) <= 1 for g in active_ghosts
         )
@@ -61,14 +73,7 @@ class SimpleExtractor:
             get_dist((next_x, next_y), g) <= 3 for g in active_ghosts
         )
 
-        # Distance to closest active ghost
-        if active_ghosts:
-            active_dist = closestTarget((next_x, next_y), active_ghosts, state.getWalls(), is_grid=False)
-            if active_dist is not None:
-                # Use reciprocal for better linear weight scaling
-                features['closest-active-ghost'] = 1.0 / (active_dist + 1)
-
-        # Count scared ghosts at various distances
+        # Count scared ghosts 1-step away (legacy feature)
         features['#-of-scared-ghosts-1-step-away'] = sum(
             get_dist((next_x, next_y), g) <= 1 for g in scared_ghosts
         )
@@ -82,19 +87,21 @@ class SimpleExtractor:
         # if there is no danger of ghosts then add the food feature
         if not features['#-of-active-ghosts-1-step-away']:
             if state.getFood()[next_x][next_y]:
-                features['eats-food'] = 1
-            
+                features['eats-food'] = 1.0
+        
         # Food distance
         food_dist = closestTarget((next_x, next_y), state.getFood(), state.getWalls())
         if food_dist is not None:
-            features['closest-food'] = float(food_dist) / (state.getWalls().width * state.getWalls().height)
+            features['closest-food'] = float(food_dist) / norm_factor
 
-        # Scared ghost distance
-        if scared_ghosts:
-            scared_dist = closestTarget((next_x, next_y), scared_ghosts, state.getWalls(), is_grid=False)
-            if scared_dist is not None:
-                # Use reciprocal for better linear weight scaling
-                features['closest-scared-ghost'] = 1.0 / (scared_dist + 1)
+        # Capsule features
+        capsules = state.getCapsules()
+        features['#-of-capsules'] = len(capsules)
+        
+        if capsules:
+            capsule_dist = closestTarget((next_x, next_y), capsules, state.getWalls(), is_grid=False)
+            if capsule_dist is not None:
+                features['closest-capsule'] = float(capsule_dist) / norm_factor
             
         return features
 
