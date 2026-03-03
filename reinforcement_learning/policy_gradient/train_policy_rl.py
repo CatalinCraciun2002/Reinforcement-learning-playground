@@ -288,7 +288,24 @@ class PolicyGradientTrainer(BaseTrainer):
         total_entropy = 0.0
         total_loss_val = 0.0
         num_updates = 0
-        
+
+        # Switch to eval so BatchNorm uses stable running statistics.
+        # Re-compute old_log_probs in eval mode so that both old and new
+        # log probs use the same BN behavior — the rollout-time log probs
+        # used per-batch BN stats (train mode) which differ from mini-batch
+        # stats, making the PPO ratio unreliable.
+        self.model.eval()
+        with torch.no_grad():
+            old_lp_chunks = []
+            for i in range(0, n_samples, self.mini_batch_size):
+                chunk = all_state_tensors[i:i + self.mini_batch_size]
+                self.model(chunk, return_both=True)
+                chunk_actions = all_action_indices[i:i + self.mini_batch_size]
+                old_lp_chunks.append(
+                    self.model.last_log_probs[torch.arange(len(chunk_actions)), chunk_actions]
+                )
+            all_old_log_probs = torch.cat(old_lp_chunks).detach()
+
         for _ in range(self.ppo_epochs):
             indices = torch.randperm(n_samples)
             
@@ -312,7 +329,7 @@ class PolicyGradientTrainer(BaseTrainer):
 
                 # PPO clipped surrogate
                 ratio = torch.exp(new_log_probs - mb_old_log_probs)
-                ratio = torch.clamp(ratio, 1e-3, 10.0)  # Safety clamp: prevent extreme ratios spiking loss
+                ratio = torch.clamp(ratio, 1e-3, 10.0)  # Safety clamp
                 surr1 = ratio * mb_advantages
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * mb_advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
@@ -339,18 +356,21 @@ class PolicyGradientTrainer(BaseTrainer):
                 total_loss_val += loss.item()
                 num_updates += 1
 
+        self.model.train()
+
         self.wins += self.orchestrator.total_wins()
         
         if self.save_visualization_data:
             self.on_visualization_epoch_end()
         
         avg_steps = self.total_steps / self.orchestrator.total_wins_plus_one() if self.total_steps > 0 else 0
-        
+        n = max(num_updates, 1)
+
         return {
-            'Loss/total': total_loss_val / num_updates,
-            'Loss/actor': total_actor_loss / num_updates,
-            'Loss/critic': total_critic_loss / num_updates,
-            'Loss/entropy_bonus': total_entropy / num_updates,
+            'Loss/total': total_loss_val / n,
+            'Loss/actor': total_actor_loss / n,
+            'Loss/critic': total_critic_loss / n,
+            'Loss/entropy_bonus': total_entropy / n,
             'Performance/total_wins': self.wins,
             'Performance/avg_steps': avg_steps,
         }
@@ -423,6 +443,7 @@ class PolicyGradientTrainer(BaseTrainer):
 
 
 def main():
+    
     parser = argparse.ArgumentParser(description='PPO Pacman Training')
     parser.add_argument('--num-epochs', type=int, default=400, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
@@ -431,7 +452,7 @@ def main():
     parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--clip-epsilon', type=float, default=0.2, help='PPO clipping epsilon')
-    parser.add_argument('--ppo-epochs', type=int, default=6, help='PPO optimization epochs per rollout')
+    parser.add_argument('--ppo-epochs', type=int, default=4, help='PPO optimization epochs per rollout')
     parser.add_argument('--mini-batch-size', type=int, default=128, help='Mini-batch size for PPO updates')
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
     parser.add_argument('--show-epochs', type=int, default=5, 
@@ -444,7 +465,7 @@ def main():
     parser.add_argument('--test-suite', type=str, default='custom_only',
                        help='Name of the scenario suite for validation')
 
-    parser.add_argument('--resume', type=str, default='runs\\policy_gradient\\20260301_203731',
+    parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
     parser.add_argument('--use-best', action='store_true',
                        help='Load best checkpoint instead of last', default=False)
