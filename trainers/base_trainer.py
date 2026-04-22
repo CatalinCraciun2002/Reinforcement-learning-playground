@@ -17,6 +17,7 @@ from torch.optim import Optimizer
 from tqdm import tqdm
 import sys
 import os
+import argparse
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,14 +38,41 @@ class BaseTrainer(ABC):
     Subclasses must implement algorithm-specific methods.
     """
     
+    @staticmethod
+    def build_parser():
+        """
+        Builds a standard argument parser with common RL hyperparameters.
+        Subclasses can call this and then add their own specific arguments.
+        """
+        parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        parser.add_argument('--num-epochs', type=int, default=100, help='Number of epochs to train')
+        parser.add_argument('--batch-size', type=int, default=4, help='Batch size (number of parallel environments)')
+        parser.add_argument('--steps-per-epoch', type=int, default=16, help='Steps per epoch per environment')
+        parser.add_argument('--gamma', type=float, default=0.95, help='Discount factor')
+        parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda')
+        parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+        parser.add_argument('--clip-epsilon', type=float, default=0.2, help='PPO clip epsilon')
+        parser.add_argument('--ppo-epochs', type=int, default=4, help='PPO optimization epochs')
+        parser.add_argument('--mini-batch-size', type=int, default=4, help='PPO mini batch size')
+        parser.add_argument('--show-epochs', type=int, default=5, help='Show validation game every N epochs')
+        parser.add_argument('--validation-games', type=int, default=2, help='Number of validation games')
+        parser.add_argument('--train-suite', type=str, default='custom_only', help='Training environment suite')
+        parser.add_argument('--test-suite', type=str, default='custom_only', help='Testing environment suite')
+        parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+        parser.add_argument('--use-best', action='store_true', default=False, help='Use best checkpoint when resuming')
+        parser.add_argument('--save-visualization', action='store_true', default=False, help='Save data for visualization')
+        return parser
+
     def __init__(
         self,
         training_type: str,
-        num_epochs: int,
-        hyperparams: Dict[str, Any],
+        args=None,
+        num_epochs: int = None,
+        hyperparams: Dict[str, Any] = None,
         resume_from: Optional[str] = None,
         use_best_checkpoint: bool = False,
-        save_visualization_data: bool = False
+        save_visualization_data: bool = False,
+        **kwargs
     ):
         """
         Initialize base trainer.
@@ -52,17 +80,42 @@ class BaseTrainer(ABC):
         Args:
             training_type: Type of training (e.g., 'dqn', 'qlearning', 'rl_training', 'human_feedback')
                           This determines the subdirectory in runs/ where logs are saved
-            num_epochs: Number of epochs to train
-            hyperparams: Dictionary of hyperparameters to log
+            args: Optional argparse.Namespace. If provided, automatically binds hyperparams.
+            num_epochs: Number of epochs to train (legacy)
+            hyperparams: Dictionary of hyperparameters to log (legacy)
             resume_from: Path to checkpoint to resume from (optional)
             use_best_checkpoint: If True and resume_from is a directory, load model_best.pth
             save_visualization_data: If True, save detailed training data for visualization (default: False)
         """
         self.training_type = training_type
-        self.num_epochs = num_epochs
-        self.hyperparams = hyperparams
-        self.resume_from = resume_from
-        self.use_best_checkpoint = use_best_checkpoint
+        
+        if args is not None:
+            # New refactored path
+            self.args = args
+            self.num_epochs = getattr(args, 'num_epochs', 100)
+            self.resume_from = getattr(args, 'resume', None)
+            self.use_best_checkpoint = getattr(args, 'use_best', False)
+            self.save_visualization_data = getattr(args, 'save_visualization', False)
+            
+            # Common RL arguments bound to self if they exist in args
+            for attr in ['batch_size', 'steps_per_epoch', 'gamma', 'lam', 'lr', 
+                         'clip_epsilon', 'ppo_epochs', 'mini_batch_size', 'show_epochs', 
+                         'validation_games', 'train_suite', 'test_suite']:
+                if hasattr(args, attr):
+                    setattr(self, attr, getattr(args, attr))
+            
+            self.hyperparams = vars(args).copy()
+        else:
+            # Legacy path for non-refactored scripts
+            self.num_epochs = num_epochs
+            self.hyperparams = hyperparams if hyperparams is not None else {}
+            self.resume_from = resume_from
+            self.use_best_checkpoint = use_best_checkpoint
+            self.save_visualization_data = save_visualization_data
+            
+            # Bind extra kwargs for legacy classes
+            for k, v in kwargs.items():
+                setattr(self, k, v)
         
         # Initialize logger
         self.logger = TensorBoardLogger(

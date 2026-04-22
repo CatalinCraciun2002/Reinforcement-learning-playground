@@ -169,7 +169,7 @@ class GameOrchestrator:
         import torch
 
         display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05) if with_graphics else None
-        val_env = PacmanEnv(self.agent, scenario, display=display)
+        val_env = PacmanEnv(self.agent, scenario, display=display, env_id='val')
 
         steps = 0
         done = False
@@ -182,9 +182,9 @@ class GameOrchestrator:
                 break
 
             with torch.no_grad():
-                probs, _ = self.agent.forward(state)
+                probs, _ = self.agent.forward(state, env_id='val')
 
-            action, _ = self.agent.getAction(legal, probs)
+            action, _ = self.agent.getAction(legal, probs, env_id='val')
             _, _, done = val_env.step(action)
             steps += 1
 

@@ -7,3 +7,4 @@ runs/**/*
 !runs/logger.py
 *.pkl
 reinforcement_learning/learning_visualization/visualization_data
+token.json

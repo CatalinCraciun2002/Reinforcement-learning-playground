@@ -13,7 +13,7 @@ import argparse
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
-from reinforcement_learning.base_trainer import BaseTrainer
+from trainers.base_trainer import BaseTrainer
 from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwork
 from agents.policy_gradient_agents.deepRlAgent import RLAgent
 from core.game_orchestrator import GameOrchestrator
@@ -24,65 +24,12 @@ from display import graphicsDisplay
 class PolicyGradientTrainer(BaseTrainer):
     """PPO Trainer using GAE and clipped surrogate objective."""
     
-    def __init__(
-        self,
-        num_epochs=100,
-        batch_size=32,
-        steps_per_epoch=20,
-        train_suite='hard_only',
-        test_suite='hard_only',
-        gamma=0.95,
-        lam=0.95,
-        lr=1e-4,
-        memory_context=5,
-        show_epochs=50,
-        validation_games=8,
-        clip_epsilon=0.2,
-        ppo_epochs=4,
-        mini_batch_size=128,
-        resume_from=None,
-        use_best_checkpoint=False,
-        save_visualization_data=False
-    ):
-        self.batch_size = batch_size
-        self.steps_per_epoch = steps_per_epoch
-        self.train_suite = train_suite
-        self.test_suite = test_suite
-        self.gamma = gamma
-        self.lam = lam
-        self.lr = lr
-        self.memory_context = memory_context
-        self.show_epochs = show_epochs
-        self.validation_games = validation_games
-        self.clip_epsilon = clip_epsilon
-        self.ppo_epochs = ppo_epochs
-        self.mini_batch_size = mini_batch_size
-        
-        hyperparams = {
-            'num_epochs': num_epochs,
-            'batch_size': batch_size,
-            'steps_per_epoch': steps_per_epoch,
-            'learning_rate': lr,
-            'gamma': gamma,
-            'lambda': lam,
-            'clip_epsilon': clip_epsilon,
-            'ppo_epochs': ppo_epochs,
-            'mini_batch_size': mini_batch_size,
-            'memory_context': memory_context,
-            'train_suite': train_suite,
-            'test_suite': test_suite,
-            'pretrained': resume_from is not None,
-            'use_best_checkpoint': use_best_checkpoint
-        }
-        
+    def __init__(self, args):
         super().__init__(
             training_type='policy_gradient',
-            num_epochs=num_epochs,
-            hyperparams=hyperparams,
-            resume_from=resume_from,
-            use_best_checkpoint=use_best_checkpoint,
-            save_visualization_data=save_visualization_data
+            args=args
         )
+        self.memory_context = getattr(args, 'memory_context', 5)
         
         self.agent = None
         self.orchestrator = None
@@ -442,37 +389,17 @@ class PolicyGradientTrainer(BaseTrainer):
         }
 
 
-def main():
     
-    parser = argparse.ArgumentParser(description='PPO Pacman Training')
-    parser.add_argument('--num-epochs', type=int, default=400, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
-    parser.add_argument('--steps-per-epoch', type=int, default=64, help='Steps per environment per epoch')
-    parser.add_argument('--gamma', type=float, default=0.95, help='Discount factor')
-    parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--clip-epsilon', type=float, default=0.2, help='PPO clipping epsilon')
-    parser.add_argument('--ppo-epochs', type=int, default=4, help='PPO optimization epochs per rollout')
-    parser.add_argument('--mini-batch-size', type=int, default=128, help='Mini-batch size for PPO updates')
+def main():
+    parser = PolicyGradientTrainer.build_parser()
+    
+    # Add script-specific arguments
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
-    parser.add_argument('--show-epochs', type=int, default=5, 
-                       help='Render validation game every N epochs (0 to disable)')
-    parser.add_argument('--validation-games', type=int, default=8, 
-                       help='Number of validation games per epoch')
-
-    parser.add_argument('--train-suite', type=str, default='custom_only',
-                       help='Name of the scenario suite for training')
-    parser.add_argument('--test-suite', type=str, default='custom_only',
-                       help='Name of the scenario suite for validation')
-
-    parser.add_argument('--resume', type=str, default=None,
-                       help='Path to checkpoint to resume from')
-    parser.add_argument('--use-best', action='store_true',
-                       help='Load best checkpoint instead of last', default=False)
-    parser.add_argument('--save-visualization-data', action='store_true',
-                       help='Save training data for visualization', default=False)
     parser.add_argument('--validate-only', action='store_true',
                        help='Only run a validation game without training', default=False)
+    
+    # For parameters that differ in defaults from the base parser, we could update the defaults:
+    parser.set_defaults(num_epochs=400, batch_size=32, steps_per_epoch=64, mini_batch_size=128, validation_games=8)
     
     args = parser.parse_args()
     
@@ -485,7 +412,7 @@ def main():
         print(f"Running validation game from checkpoint: {args.resume}")
         
         # Determine checkpoint path
-        checkpoint_name = 'model_best.pth' if args.use_best else 'model_last.pth'
+        checkpoint_name = 'model_best.pth' if getattr(args, 'use_best', False) else 'model_last.pth'
         checkpoint_path = os.path.join(args.resume, checkpoint_name)
         
         if not os.path.exists(checkpoint_path):
@@ -522,25 +449,7 @@ def main():
         return
     
     # Normal training mode
-    trainer = PolicyGradientTrainer(
-        num_epochs=args.num_epochs,
-        batch_size=args.batch_size,
-        steps_per_epoch=args.steps_per_epoch,
-        train_suite=args.train_suite,
-        test_suite=args.test_suite,
-        gamma=args.gamma,
-        lam=args.lam,
-        lr=args.lr,
-        clip_epsilon=args.clip_epsilon,
-        ppo_epochs=args.ppo_epochs,
-        mini_batch_size=args.mini_batch_size,
-        memory_context=args.memory_context,
-        show_epochs=args.show_epochs,
-        validation_games=args.validation_games,
-        resume_from=args.resume,
-        use_best_checkpoint=args.use_best,
-        save_visualization_data=args.save_visualization_data
-    )
+    trainer = PolicyGradientTrainer(args)
     
     trainer.setup()
     trainer.train()
