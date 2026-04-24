@@ -104,8 +104,17 @@ class LLMActorCriticNetwork(nn.Module):
             # shape: (batch_size, seq_len, hidden_size)
             last_hidden_state = outputs.hidden_states[-1]
             
-            # Take the representation of the last token in the sequence
-            context_vector = last_hidden_state[:, -1, :]
+            # Take the representation of the last valid token in the sequence
+            if "attention_mask" in model_inputs:
+                # Multiply mask by indices to find the highest index that is not masked
+                seq_len = last_hidden_state.size(1)
+                indices = torch.arange(seq_len, device=device).unsqueeze(0)
+                last_token_indices = (model_inputs["attention_mask"] * indices).argmax(dim=1)
+                
+                batch_size = last_hidden_state.size(0)
+                context_vector = last_hidden_state[torch.arange(batch_size), last_token_indices, :]
+            else:
+                context_vector = last_hidden_state[:, -1, :]
             
         # Cast to float32 - backbone is bfloat16 but trainable heads are float32
         context_vector = context_vector.float()
