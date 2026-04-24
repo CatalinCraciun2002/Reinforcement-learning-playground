@@ -90,10 +90,16 @@ class ActorCriticNetwork(nn.Module):
         
         return F.relu(self.fc_shared(out))
     
-    def forward_actor(self, shared_features):
+    def forward_actor(self, shared_features, action_mask=None):
         """Policy head: action probabilities and log-probabilities."""
         out = F.relu(self.actor_fc1(shared_features))
-        log_probs = F.log_softmax(self.actor_fc2(out), dim=1)
+        logits = self.actor_fc2(out)
+        
+        if action_mask is not None:
+            # Mask illegal actions with a large negative number so they become 0 after softmax
+            logits = logits.masked_fill(action_mask == 0.0, -1e9)
+            
+        log_probs = F.log_softmax(logits, dim=1)
         return log_probs.exp(), log_probs  # (probs, log_probs)
     
     def forward_critic(self, shared_features):
@@ -101,19 +107,20 @@ class ActorCriticNetwork(nn.Module):
         out = F.relu(self.critic_fc1(shared_features))
         return self.critic_fc2(out)
     
-    def forward(self, x, return_both=True):
+    def forward(self, x, return_both=True, action_mask=None):
         """
         Forward pass.
         
         Args:
             x: Input tensor (batch, 5+memory_context, H, W)
             return_both: Return both actor and critic outputs
+            action_mask: Optional binary mask for legal actions (batch, 5)
             
         Returns:
             (action_probs, values) if return_both else action_probs
         """
         features = self.forward_backbone(x)
-        probs, self.last_log_probs = self.forward_actor(features)
+        probs, self.last_log_probs = self.forward_actor(features, action_mask)
 
         if return_both:
             return probs, self.forward_critic(features)

@@ -128,8 +128,8 @@ class HumanFeedbackTrainer(BaseTrainer):
         memory_length=5,
         train_critic=True,
         gamma=0.99,
-        train_suite='standard_only',
-        test_suite='standard_only',
+        train_suite='medium_classic_only',
+        test_suite='medium_classic_only',
         validation_games=8,
         resume_from=None
     ):
@@ -187,8 +187,23 @@ class HumanFeedbackTrainer(BaseTrainer):
         """Create Actor-Critic network."""
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}\n")
+
+        if device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
         model = ActorCriticNetwork(memory_context=self.memory_length)
-        return model.to(device)
+        model = model.to(device)
+        
+        if device.type == 'cuda':
+            try:
+                print("Attempting to compile the model with torch.compile...")
+                model = torch.compile(model, mode="reduce-overhead")
+                print("Model compilation successful.\n")
+            except Exception as e:
+                print(f"torch.compile fallback: {e}\nContinuing with standard execution.\n")
+                
+        return model
     
     def create_optimizer(self, model):
         """Create Adam optimizer."""

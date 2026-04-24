@@ -25,14 +25,14 @@ class QLearningTrainer(BaseTrainer):
 
     def __init__(
         self,
-        num_episodes=100,
+        num_episodes=1000,
         suite_name='medium_classic_only',
         alpha=0.2,
         gamma=0.8,
         epsilon=0.05,
         render_every=0,
         view_speed=0.05,
-        validation_games=10,
+        validation_games=100,
         resume_from=None
     ):
         self.suite_name = suite_name
@@ -250,7 +250,7 @@ class QLearningTrainer(BaseTrainer):
 
 def main():
     parser = argparse.ArgumentParser(description='Q-Learning Pacman Training')
-    parser.add_argument('--episodes', type=int, default=100, help='Number of training episodes')
+    parser.add_argument('--episodes', type=int, default=1000, help='Number of training episodes')
     parser.add_argument('--suite', type=str, default='medium_classic_only',
                         help=f'Scenario suite name. Available: {list(SUITES.keys())}')
     parser.add_argument('--render-every', type=int, default=10,
@@ -258,9 +258,9 @@ def main():
     parser.add_argument('--view-speed', type=float, default=0.05, help='Speed of rendered game')
     parser.add_argument('--validation-games', type=int, default=10,
                         help='Number of games to play for validation')
-    parser.add_argument('--alpha', type=float, default=0.2, help='Learning Rate')
-    parser.add_argument('--gamma', type=float, default=0.8, help='Discount Factor')
-    parser.add_argument('--epsilon', type=float, default=0.05, help='Exploration Rate')
+    parser.add_argument('--alpha', type=float, default=0.1, help='Learning Rate')
+    parser.add_argument('--gamma', type=float, default=0.9, help='Discount Factor')
+    parser.add_argument('--epsilon', type=float, default=0.002, help='Exploration Rate')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
 

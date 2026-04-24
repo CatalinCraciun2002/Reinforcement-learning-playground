@@ -110,7 +110,25 @@ class DistillationTrainer(BaseTrainer):
     
     def create_model(self):
         """Create student Policy Gradient network."""
-        return ActorCriticNetwork(memory_context=self.memory_context)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {device}\n")
+
+        if device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
+        model = ActorCriticNetwork(memory_context=self.memory_context)
+        model = model.to(device)
+        
+        if device.type == 'cuda':
+            try:
+                print("Attempting to compile the model with torch.compile...")
+                model = torch.compile(model, mode="reduce-overhead")
+                print("Model compilation successful.\n")
+            except Exception as e:
+                print(f"torch.compile fallback: {e}\nContinuing with standard execution.\n")
+
+        return model
     
     def create_optimizer(self, model):
         """Create Adam optimizer for student."""

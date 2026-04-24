@@ -15,12 +15,12 @@ from tqdm import tqdm
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from reinforcement_learning.qlearning_agent import ApproximateQAgent
+from agents.qlearning_agents.qlearning_agent import ApproximateQAgent
 import core.layout as layout_module
 from core.pacman import ClassicGameRules
 import display.textDisplay as textDisplay
 import display.graphicsDisplay as graphicsDisplay
-import agents.ghostAgents as ghostAgents
+import agents.base_agents.ghostAgents as ghostAgents
 from core.game import Directions
 from reinforcement_learning.distance_utils import get_path_to_food, get_paths_to_all_scared_ghosts, get_paths_to_all_active_ghosts, get_path_to_capsules
 from reinforcement_learning.plot_utils import InGameTrajectoryVisualizer

@@ -22,9 +22,10 @@ from models.policy_gradient_models.simple_residual_conv import ActorCriticNetwor
 class RLAgent(Agent):
     """RL Agent with position-based memory."""
     
-    def __init__(self, model, memory_context=5):
+    def __init__(self, model, memory_context=5, device=None):
 
         self.model = model
+        self.device = device if device else next(model.parameters()).device
         self.actions = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST, Directions.STOP]
         self.memory_context = memory_context
         self.position_buffers = {}  # env_id -> deque for batched processing
@@ -53,17 +54,20 @@ class RLAgent(Agent):
         walls = state.getWalls()
         width, height = walls.width, walls.height
         
-        # 6 base channels
-        channels = np.zeros((6, height, width), dtype=np.float32)
+        buffer = self.position_buffers.get(env_id, [])
+        num_pos_channels = len(buffer)
+        
+        # 6 base channels + memory context channels
+        channels = np.zeros((6 + num_pos_channels, height, width), dtype=np.float32)
         
         # Channel 0: Pacman
-        x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
-        channels[0, y, x] = 1.0
+        px, py = state.getPacmanPosition()
+        channels[0, int(py), int(px)] = 1.0
         
         # Channels 1 & 3: Ghosts
         for ghost in state.getGhostStates():
-            x, y = int(ghost.getPosition()[0]), int(ghost.getPosition()[1])
-            channels[3 if ghost.scaredTimer > 0 else 1, y, x] = 1.0
+            gx, gy = ghost.getPosition()
+            channels[3 if ghost.scaredTimer > 0 else 1, int(gy), int(gx)] = 1.0
         
         # Channel 2: Walls (cached - walls never change)
         if env_id not in self.wall_cache:
@@ -88,8 +92,8 @@ class RLAgent(Agent):
             channels[5, int(cy), int(cx)] = 1.0
         
         # Append position history channels from environment-specific buffer
-        for pos_channel in self.position_buffers[env_id]:
-            channels = np.concatenate([channels, pos_channel], axis=0)
+        for i, (hx, hy) in enumerate(buffer):
+            channels[6 + i, hy, hx] = 1.0
         
         return torch.from_numpy(channels).unsqueeze(0)
     
@@ -100,15 +104,10 @@ class RLAgent(Agent):
             state: Initial game state
             env_id: Environment ID for buffer tracking
         """
-        walls = state.getWalls()
-        width, height = walls.width, walls.height
         x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
         
-        initial_pos = np.zeros((1, height, width), dtype=np.float32)
-        initial_pos[0, y, x] = 1.0
-        
-        # Fill all buffer slots with initial position
-        self.position_buffers[env_id] = deque([initial_pos] * self.memory_context, maxlen=self.memory_context)
+        # Fill all buffer slots with initial position (stored as tuples)
+        self.position_buffers[env_id] = deque([(x, y)] * self.memory_context, maxlen=self.memory_context)
     
     def update_position_buffer(self, state, env_id=0):
         """Add current Pacman position to buffer.
@@ -117,19 +116,23 @@ class RLAgent(Agent):
             state: Current game state
             env_id: Environment ID for buffer tracking
         """
-        walls = state.getWalls()
-        width, height = walls.width, walls.height
         x, y = int(state.getPacmanPosition()[0]), int(state.getPacmanPosition()[1])
         
-        pos_channel = np.zeros((1, height, width), dtype=np.float32)
-        pos_channel[0, y, x] = 1.0
-        self.position_buffers[env_id].append(pos_channel)
+        self.position_buffers[env_id].append((x, y))
     
+    def get_action_mask(self, legal_actions):
+        """Creates a binary mask tensor for legal actions."""
+        return torch.tensor([1.0 if a in legal_actions else 0.0 for a in self.actions], dtype=torch.float32)
+
     def getAction(self, legal_actions, action_probs):
 
-        mask = torch.tensor([1.0 if a in legal_actions else 0.0 for a in self.actions])
+        mask = self.get_action_mask(legal_actions).to(action_probs.device)
         masked = action_probs * mask
-        masked = masked / masked.sum() if masked.sum() > 0 else mask / mask.sum()
+        if masked.sum() > 0:
+            masked = masked / masked.sum()
+        else:
+            # Fallback if no probability mass on legal acts (shouldn't happen with proper masking)
+            masked = mask / mask.sum()
         action_idx = torch.multinomial(masked, 1).item()
 
         return self.actions[action_idx], action_idx
@@ -154,12 +157,13 @@ class RLAgent(Agent):
 
         return probs, value
     
-    def forward_batch(self, states, env_ids):
+    def forward_batch(self, states, env_ids, action_masks=None):
         """Batched forward pass for multiple states.
         
         Args:
             states: List of game states
             env_ids: List of environment IDs corresponding to states
+            action_masks: Optional list of action mask tensors
             
         Returns:
             probs_batch: Action probabilities (batch_size, 5)
@@ -168,10 +172,13 @@ class RLAgent(Agent):
         
         # Convert all states to tensors and stack into batch
         state_tensors = [self.state_to_tensor(state, env_id) for state, env_id in zip(states, env_ids)]
-        batch_tensor = torch.cat(state_tensors, dim=0)  # (batch_size, channels, H, W)
+        batch_tensor = torch.cat(state_tensors, dim=0).to(self.device)  # (batch_size, channels, H, W)
+        
+        if action_masks is not None:
+            action_masks = torch.stack(action_masks).to(self.device)
         
         # Single batched forward pass
-        probs_batch, values_batch = self.model(batch_tensor, return_both=True)
+        probs_batch, values_batch = self.model(batch_tensor, return_both=True, action_mask=action_masks)
         values_batch = values_batch.squeeze(-1)  # (batch_size,)
 
         # Update position buffers for all states

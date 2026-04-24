@@ -114,7 +114,22 @@ class AutoencoderTrainer(BaseTrainer):
     def create_model(self):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}\n")
-        return AutoencoderNetwork(memory_context=self.memory_length).to(device)
+
+        if device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
+        model = AutoencoderNetwork(memory_context=self.memory_length).to(device)
+        
+        if device.type == 'cuda':
+            try:
+                print("Attempting to compile the model with torch.compile...")
+                model = torch.compile(model, mode="reduce-overhead")
+                print("Model compilation successful.\n")
+            except Exception as e:
+                print(f"torch.compile fallback: {e}\nContinuing with standard execution.\n")
+                
+        return model
 
     def create_optimizer(self, model):
         return optim.Adam(model.parameters(), lr=self.lr)

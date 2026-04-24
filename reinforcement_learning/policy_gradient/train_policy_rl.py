@@ -38,7 +38,7 @@ class PolicyGradientTrainer(BaseTrainer):
         show_epochs=50,
         validation_games=8,
         clip_epsilon=0.2,
-        ppo_epochs=4,
+        ppo_epochs=10,
         mini_batch_size=128,
         resume_from=None,
         use_best_checkpoint=False,
@@ -91,7 +91,25 @@ class PolicyGradientTrainer(BaseTrainer):
     
     def create_model(self):
         """Create Actor-Critic network."""
-        return ActorCriticNetwork(memory_context=self.memory_context)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {device}\n")
+        
+        if device.type == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+        model = ActorCriticNetwork(memory_context=self.memory_context)
+        model = model.to(device)
+        
+        if device.type == 'cuda':
+            try:
+                print("Attempting to compile the model with torch.compile...")
+                model = torch.compile(model, mode="reduce-overhead")
+                print("Model compilation successful.\n")
+            except Exception as e:
+                print(f"torch.compile fallback: {e}\nContinuing with standard execution.\n")
+                
+        return model
     
     def create_optimizer(self, model):
         """Create Adam optimizer."""
@@ -137,6 +155,7 @@ class PolicyGradientTrainer(BaseTrainer):
             {
                 'state_tensors': [],
                 'action_indices': [],
+                'action_masks': [],
                 'old_log_probs': [],
                 'old_values': [],
                 'rewards': [],
@@ -152,8 +171,11 @@ class PolicyGradientTrainer(BaseTrainer):
         legal_actions = self.orchestrator.get_all_legal(states)
         env_ids = list(range(self.batch_size))
         
+        # Get action masks for initial states
+        action_masks = [self.agent.get_action_mask(legal) for legal in legal_actions]
+        
         # Batched forward pass for initial states
-        probs_batch, values_batch = self.agent.forward_batch(states, env_ids)
+        probs_batch, values_batch = self.agent.forward_batch(states, env_ids, action_masks)
         
         for step_idx in range(self.steps_per_epoch):
             next_states = []
@@ -161,6 +183,7 @@ class PolicyGradientTrainer(BaseTrainer):
             dones = []
             actions_taken = []
             action_indices = []
+            current_action_masks = action_masks
             
             # Store state tensors for PPO re-evaluation (before actions)
             step_tensors = [
@@ -197,16 +220,23 @@ class PolicyGradientTrainer(BaseTrainer):
             for env_idx in range(self.batch_size):
                 env_data[env_idx]['state_tensors'].append(step_tensors[env_idx])
                 env_data[env_idx]['action_indices'].append(action_indices[env_idx])
+                env_data[env_idx]['action_masks'].append(current_action_masks[env_idx])
                 env_data[env_idx]['old_log_probs'].append(old_log_probs[env_idx])
                 env_data[env_idx]['old_values'].append(values_batch[env_idx].detach())
                 env_data[env_idx]['rewards'].append(rewards[env_idx])
             
-            # Batched forward pass for next states
-            next_probs_batch, next_values_batch = self.agent.forward_batch(next_states, env_ids)
+            # Next states legal actions and masks
+            next_legal_actions = self.orchestrator.get_all_legal(next_states)
+            next_action_masks = [self.agent.get_action_mask(legal) for legal in next_legal_actions]
             
-            # TD errors (for GAE)
-            rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
-            dones_tensor = torch.tensor(dones, dtype=torch.float32)
+            # Batched forward pass for next states
+            next_probs_batch, next_values_batch = self.agent.forward_batch(
+                next_states, env_ids, next_action_masks
+            )
+            
+            # TD errors (for GAE) - SCALE REWARDS Down to Prevent Critic Explosion
+            rewards_tensor = torch.tensor(rewards, dtype=torch.float32).to(next_values_batch.device) / 100.0
+            dones_tensor = torch.tensor(dones, dtype=torch.float32).to(next_values_batch.device)
             td_errors = rewards_tensor + self.gamma * next_values_batch.detach() * (1 - dones_tensor) - values_batch.detach()
             
             for env_idx in range(self.batch_size):
@@ -231,13 +261,15 @@ class PolicyGradientTrainer(BaseTrainer):
                     self.on_visualization_step(env_idx, step_data)
             
             states = next_states
-            legal_actions = self.orchestrator.get_all_legal(states)
+            legal_actions = next_legal_actions
+            action_masks = next_action_masks
             probs_batch = next_probs_batch
             values_batch = next_values_batch
         
         # --- Compute GAE advantages and returns ---
         all_state_tensors = []
         all_action_indices = []
+        all_action_masks = []
         all_old_log_probs = []
         all_old_values = []
         all_advantages = []
@@ -264,16 +296,26 @@ class PolicyGradientTrainer(BaseTrainer):
             
             all_state_tensors.extend(env_data[env_idx]['state_tensors'])
             all_action_indices.extend(env_data[env_idx]['action_indices'])
+            all_action_masks.extend(env_data[env_idx]['action_masks'])
             all_old_log_probs.extend(env_data[env_idx]['old_log_probs'])
             all_old_values.extend(env_data[env_idx]['old_values'])
             all_advantages.extend(advantages)
         
+        device = next(self.model.parameters()).device
+        
         # Stack into tensors
-        all_state_tensors = torch.cat(all_state_tensors, dim=0)          # (N, C, H, W)
-        all_action_indices = torch.tensor(all_action_indices, dtype=torch.long)  # (N,)
-        all_old_log_probs = torch.stack(all_old_log_probs)               # (N,)
-        all_old_values = torch.stack(all_old_values)                     # (N,)
-        all_advantages = torch.stack(all_advantages)                     # (N,)
+        all_state_tensors = torch.cat(all_state_tensors, dim=0).to(device)          # (N, C, H, W)
+        all_action_indices = torch.tensor(all_action_indices, dtype=torch.long).to(device)  # (N,)
+        all_action_masks = torch.stack(all_action_masks).to(device)                 # (N, 5)
+        all_old_log_probs = torch.stack(all_old_log_probs).to(device)               # (N,)
+        all_old_values = torch.stack(all_old_values).to(device)                     # (N,)
+        
+        # Convert advantages list to tensor directly on device
+        # Using a safer approach for list of tensors/floats
+        if isinstance(all_advantages[0], torch.Tensor):
+            all_advantages = torch.stack(all_advantages).to(device)                 # (N,)
+        else:
+            all_advantages = torch.tensor(all_advantages, dtype=torch.float32).to(device)
         
         # Returns for value loss
         all_returns = all_advantages + all_old_values
@@ -299,7 +341,8 @@ class PolicyGradientTrainer(BaseTrainer):
             old_lp_chunks = []
             for i in range(0, n_samples, self.mini_batch_size):
                 chunk = all_state_tensors[i:i + self.mini_batch_size]
-                self.model(chunk, return_both=True)
+                chunk_masks = all_action_masks[i:i + self.mini_batch_size]
+                self.model(chunk, return_both=True, action_mask=chunk_masks)
                 chunk_actions = all_action_indices[i:i + self.mini_batch_size]
                 old_lp_chunks.append(
                     self.model.last_log_probs[torch.arange(len(chunk_actions)), chunk_actions]
@@ -315,12 +358,13 @@ class PolicyGradientTrainer(BaseTrainer):
                 
                 mb_states = all_state_tensors[mb_idx]
                 mb_actions = all_action_indices[mb_idx]
+                mb_action_masks = all_action_masks[mb_idx]
                 mb_old_log_probs = all_old_log_probs[mb_idx]
                 mb_advantages = all_advantages[mb_idx]
                 mb_returns = all_returns[mb_idx]
                 
                 # Re-evaluate through model directly (bypass agent to avoid buffer side effects)
-                new_probs, new_values = self.model(mb_states, return_both=True)
+                new_probs, new_values = self.model(mb_states, return_both=True, action_mask=mb_action_masks)
                 new_values = new_values.squeeze(-1)
                 
                 new_log_probs = self.model.last_log_probs[
@@ -445,23 +489,23 @@ class PolicyGradientTrainer(BaseTrainer):
 def main():
     
     parser = argparse.ArgumentParser(description='PPO Pacman Training')
-    parser.add_argument('--num-epochs', type=int, default=400, help='Number of training epochs')
+    parser.add_argument('--num-epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Number of parallel environments')
     parser.add_argument('--steps-per-epoch', type=int, default=64, help='Steps per environment per epoch')
     parser.add_argument('--gamma', type=float, default=0.95, help='Discount factor')
     parser.add_argument('--lam', type=float, default=0.9, help='GAE lambda parameter')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=1e-5, help='Learning rate')
     parser.add_argument('--clip-epsilon', type=float, default=0.2, help='PPO clipping epsilon')
     parser.add_argument('--ppo-epochs', type=int, default=4, help='PPO optimization epochs per rollout')
     parser.add_argument('--mini-batch-size', type=int, default=128, help='Mini-batch size for PPO updates')
     parser.add_argument('--memory-context', type=int, default=5, help='Number of past positions to remember')
-    parser.add_argument('--show-epochs', type=int, default=5, 
+    parser.add_argument('--show-epochs', type=int, default=5,
                        help='Render validation game every N epochs (0 to disable)')
     parser.add_argument('--validation-games', type=int, default=8, 
                        help='Number of validation games per epoch')
 
     parser.add_argument('--train-suite', type=str, default='custom_only',
-                       help='Name of the scenario suite for training')
+                       help='Name of the, scenario suite for training')
     parser.add_argument('--test-suite', type=str, default='custom_only',
                        help='Name of the scenario suite for validation')
 

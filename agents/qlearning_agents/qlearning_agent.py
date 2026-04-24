@@ -15,6 +15,11 @@ import core.util as util
 from core.game import Agent, Directions, Actions
 from reinforcement_learning.distance_utils import closestTarget
 
+def get_dist(pos1, pos2):
+    """Manhattan distance between two (x, y) positions."""
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+
 class SimpleExtractor:
     """
     Returns features for Pacman:

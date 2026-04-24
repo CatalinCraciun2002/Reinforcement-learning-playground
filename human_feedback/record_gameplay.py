@@ -17,10 +17,13 @@ from core import layout
 from core.pacman import ClassicGameRules
 from agents.base_agents import ghostAgents, keyboardAgents
 from display import graphicsDisplay
-from core.environment import (
-    REWARD_FOOD, REWARD_CAPSULE, REWARD_GHOST, 
-    REWARD_WIN, PENALTY_DEATH, PENALTY_TIME
-)
+# Default reward constants for human recordings
+REWARD_FOOD = 10
+REWARD_CAPSULE = 50
+REWARD_GHOST = 200
+REWARD_WIN = 1000
+PENALTY_DEATH = -1000
+PENALTY_TIME = -1
 
 
 class RecordingEnvironment:
